@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#E9541F">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <title>Cloze Maker スマホ版</title>
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <button id="home-button" class="brand" type="button" aria-label="問題集一覧へ戻る">
+        <canvas id="kubota-mark" class="kubota-mark" width="142" height="38" aria-hidden="true"></canvas>
+        <small>CLOZE MAKER</small>
+      </button>
+    </header>
+    <main id="app" class="app-shell" tabindex="-1">
+      <p class="loading" role="status">読み込み中です…</p>
+    </main>
+    <script src="./app.js" defer></script>
+    <script>
+      if ('serviceWorker' in navigator &&
+          (location.protocol === 'https:' || ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname))) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(() => {
+            // PWA登録に失敗しても、端末内での問題作成と練習は継続できる。
+          })
+        })
+      }
+    </script>
+  </body>
+</html>
