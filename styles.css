@@ -420,6 +420,18 @@ h2 { font-size: 19px; }
   height: auto;
 }
 
+.standalone-pdf-guide {
+  margin: -6px 0 20px;
+  border: 1px solid #f4b276;
+  border-radius: 10px;
+  padding: 12px 14px;
+  color: #71390f;
+  background: #fff3e7;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.7;
+}
+
 .pdf-selection-canvas {
   position: absolute;
   inset: 0;

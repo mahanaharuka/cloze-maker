@@ -1,4 +1,4 @@
-const CACHE_NAME = 'cloze-maker-standalone-v2-pdf-ocr'
+const CACHE_NAME = 'cloze-maker-standalone-v3-pdf-entry'
 const PRECACHE_PATHS = [
   './',
   './index.html',

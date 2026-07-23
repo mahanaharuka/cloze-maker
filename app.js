@@ -28103,14 +28103,14 @@ ${recognized}`;
       const actions = pageHeading?.querySelector(".actions");
       if (heading?.textContent !== "\u554F\u984C\u96C6" || !(actions instanceof HTMLElement)) return;
       if (actions.querySelector("[data-standalone-import]")) return;
-      const importButton = element("button", "secondary-button", "\u30D5\u30A1\u30A4\u30EB\u304B\u3089\u8AAD\u307F\u8FBC\u307F");
+      const importButton = element("button", "secondary-button", "\u554F\u984C\u96C6JSON\u3092\u8AAD\u307F\u8FBC\u3080");
       importButton.type = "button";
       importButton.dataset.standaloneImport = "true";
       importButton.addEventListener("click", () => input.click());
       actions.prepend(importButton);
     }
     function addExportButton() {
-      const actions = [...document.querySelectorAll(".page-heading .actions")].find((candidate) => [...candidate.querySelectorAll("button")].some((button) => button.textContent === "+ \u554F\u984C\u3092\u4F5C\u308B"));
+      const actions = [...document.querySelectorAll(".page-heading .actions")].find((candidate) => [...candidate.querySelectorAll("button")].some((button) => button.textContent?.startsWith("+ \u554F\u984C\u3092\u4F5C\u308B")));
       if (!actions || actions.querySelector("[data-standalone-export]")) return;
       const exportButton = element("button", "secondary-button", "\u30D5\u30A1\u30A4\u30EB\u3078\u66F8\u304D\u51FA\u3057");
       exportButton.type = "button";
@@ -28136,6 +28136,25 @@ ${recognized}`;
       const deleteButton = [...actions.querySelectorAll("button")].find((button) => button.textContent === "\u554F\u984C\u96C6\u3092\u524A\u9664");
       actions.insertBefore(exportButton, deleteButton ?? null);
     }
+    function addPdfEntryGuidance() {
+      const pageHeading = document.querySelector(".page-heading");
+      const heading = pageHeading?.querySelector("h1");
+      const actions = pageHeading?.querySelector(".actions");
+      if (!pageHeading || !(actions instanceof HTMLElement)) return;
+      if (heading?.textContent === "\u554F\u984C\u96C6") {
+        if (document.querySelector("[data-standalone-pdf-guide]")) return;
+        const guide = element(
+          "p",
+          "standalone-pdf-guide",
+          "PDF\u3092\u6587\u5B57\u8D77\u3053\u3057\u3059\u308B\u5834\u5408\uFF1A\u300C\u65B0\u3057\u3044\u554F\u984C\u96C6\u300D\u2192\u300C\u554F\u984C\u3092\u4F5C\u308B\uFF08PDF\u30FB\u624B\u5165\u529B\uFF09\u300D\u2192\u300CPDF\u3092\u9078\u3076\u300D\u306E\u9806\u306B\u9032\u3093\u3067\u304F\u3060\u3055\u3044\u3002"
+        );
+        guide.dataset.standalonePdfGuide = "true";
+        pageHeading.after(guide);
+        return;
+      }
+      const createButton2 = [...actions.querySelectorAll("button")].find((button) => button.textContent?.startsWith("+ \u554F\u984C\u3092\u4F5C\u308B"));
+      if (createButton2) createButton2.textContent = "+ \u554F\u984C\u3092\u4F5C\u308B\uFF08PDF\u30FB\u624B\u5165\u529B\uFF09";
+    }
     let scheduled = false;
     const enhance = () => {
       scheduled = false;
@@ -28144,6 +28163,7 @@ ${recognized}`;
       }
       addImportButton();
       addExportButton();
+      addPdfEntryGuidance();
     };
     const observer = new MutationObserver(() => {
       if (scheduled) return;
