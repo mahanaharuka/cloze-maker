@@ -1,10 +1,15 @@
-const CACHE_NAME = 'cloze-maker-standalone-v1'
+const CACHE_NAME = 'cloze-maker-standalone-v2-pdf-ocr'
 const PRECACHE_PATHS = [
   './',
   './index.html',
   './app.js',
   './styles.css',
   './manifest.webmanifest',
+  './pdf.worker.min.js',
+  './ocr/worker.min.js',
+  './ocr/tesseract-core-lstm.wasm.js',
+  './tessdata/jpn.traineddata.gz',
+  './tessdata/eng.traineddata.gz',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/apple-touch-icon.png',
