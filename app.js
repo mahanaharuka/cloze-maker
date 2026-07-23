@@ -25737,6 +25737,9 @@
       var currentBook = null;
       var practiceState = null;
       var editorState = null;
+      function isStandaloneApp() {
+        return document.documentElement.dataset.appMode === "standalone";
+      }
       function createKubotaTargetPoints() {
         const canvas = document.createElement("canvas");
         canvas.width = KUBOTA_MARK_WIDTH;
@@ -25994,16 +25997,44 @@
           const heading = element2("div", "page-heading");
           const headingText = element2("div");
           headingText.append(element2("h1", "", "\u554F\u984C\u96C6"));
-          headingText.append(element2("p", "lead", "\u554F\u984C\u96C6\u3092\u4F5C\u6210\u30FB\u7DE8\u96C6\u3057\u3066\u3001\u305D\u306E\u307E\u307E\u7DF4\u7FD2\u3067\u304D\u307E\u3059\u3002"));
+          headingText.append(element2(
+            "p",
+            "lead",
+            isStandaloneApp() ? "PDF\u3092\u8AAD\u307F\u53D6\u308A\u3001\u554F\u984C\u4F5C\u6210\u304B\u3089\u7DF4\u7FD2\u307E\u3067\u30B9\u30DE\u30DB\u3060\u3051\u3067\u3067\u304D\u307E\u3059\u3002" : "\u554F\u984C\u96C6\u3092\u4F5C\u6210\u30FB\u7DE8\u96C6\u3057\u3066\u3001\u305D\u306E\u307E\u307E\u7DF4\u7FD2\u3067\u304D\u307E\u3059\u3002"
+          ));
           const headingActions = element2("div", "actions");
-          headingActions.append(button("+ \u65B0\u3057\u3044\u554F\u984C\u96C6", "primary-button", () => void createBookFromDialog()));
+          headingActions.append(button(
+            isStandaloneApp() ? "PDF\u304B\u3089\u65B0\u3057\u3044\u554F\u984C\u3092\u4F5C\u308B" : "+ \u65B0\u3057\u3044\u554F\u984C\u96C6",
+            "primary-button",
+            () => void createBookFromDialog(isStandaloneApp())
+          ));
           heading.append(headingText, headingActions);
           const content = document.createDocumentFragment();
           content.append(heading);
+          if (isStandaloneApp()) {
+            const workflow = element2("section", "standalone-workflow");
+            workflow.append(element2("h2", "", "\u304B\u3093\u305F\u30933\u30B9\u30C6\u30C3\u30D7"));
+            const steps = element2("ol", "standalone-workflow-steps");
+            for (const [title, description] of [
+              ["PDF\u3092\u9078\u3076", "\u7AEF\u672B\u306B\u3042\u308BPDF\u3092\u958B\u304F"],
+              ["\u6307\u3067\u56F2\u3080", "\u6587\u5B57\u306B\u3057\u305F\u3044\u90E8\u5206\u3092\u56DB\u89D2\u304F\u56F2\u3080"],
+              ["\u6587\u5B57\u8D77\u3053\u3057", "\u7D50\u679C\u3092\u78BA\u8A8D\u3057\u3066\u554F\u984C\u306B\u3059\u308B"]
+            ]) {
+              const step = element2("li", "");
+              step.append(element2("strong", "", title), element2("span", "", description));
+              steps.append(step);
+            }
+            workflow.append(steps);
+            content.append(workflow);
+          }
           if (data.books.length === 0) {
             const empty = element2("section", "empty-state");
             empty.append(element2("h2", "", "\u554F\u984C\u96C6\u304C\u3042\u308A\u307E\u305B\u3093"));
-            empty.append(element2("p", "muted", "\u300C+ \u65B0\u3057\u3044\u554F\u984C\u96C6\u300D\u304B\u3089\u6700\u521D\u306E\u554F\u984C\u96C6\u3092\u4F5C\u308A\u307E\u3057\u3087\u3046\u3002"));
+            empty.append(element2(
+              "p",
+              "muted",
+              isStandaloneApp() ? "\u4E0A\u306E\u300CPDF\u304B\u3089\u65B0\u3057\u3044\u554F\u984C\u3092\u4F5C\u308B\u300D\u3092\u62BC\u3059\u3060\u3051\u3067\u59CB\u3081\u3089\u308C\u307E\u3059\u3002" : "\u300C+ \u65B0\u3057\u3044\u554F\u984C\u96C6\u300D\u304B\u3089\u6700\u521D\u306E\u554F\u984C\u96C6\u3092\u4F5C\u308A\u307E\u3057\u3087\u3046\u3002"
+            ));
             content.append(empty);
           } else {
             const grid = element2("div", "card-grid");
@@ -26013,7 +26044,16 @@
               const meta = element2("p", "book-meta");
               meta.append(`${book.questionCount}\u554F`, document.createElement("br"), `\u66F4\u65B0: ${formatDate(book.updatedAt)}`);
               card.append(meta);
-              card.append(button("\u554F\u984C\u96C6\u3092\u958B\u304F", "primary-button", () => void openBook(book.id)));
+              if (isStandaloneApp()) {
+                const cardActions = element2("div", "book-card-actions");
+                cardActions.append(
+                  button("PDF\u30FB\u624B\u5165\u529B\u3067\u554F\u984C\u3092\u8FFD\u52A0", "primary-button", () => void openBookAndCreateQuestion(book.id)),
+                  button("\u554F\u984C\u96C6\u3092\u898B\u308B\u30FB\u7DF4\u7FD2", "secondary-button", () => void openBook(book.id))
+                );
+                card.append(cardActions);
+              } else {
+                card.append(button("\u554F\u984C\u96C6\u3092\u958B\u304F", "primary-button", () => void openBook(book.id)));
+              }
               grid.append(card);
             }
             content.append(grid);
@@ -26026,11 +26066,11 @@
           showError(error, () => void showBookList());
         }
       }
-      async function createBookFromDialog() {
+      async function createBookFromDialog(startQuestionAfterCreate = false) {
         const title = await showModal({
           title: "\u65B0\u3057\u3044\u554F\u984C\u96C6",
           inputLabel: "\u554F\u984C\u96C6\u306E\u30BF\u30A4\u30C8\u30EB",
-          confirmLabel: "\u4F5C\u6210",
+          confirmLabel: startQuestionAfterCreate ? "\u4F5C\u6210\u3057\u3066\u6B21\u3078" : "\u4F5C\u6210",
           validate: (value) => value ? "" : "\u554F\u984C\u96C6\u306E\u30BF\u30A4\u30C8\u30EB\u3092\u5165\u529B\u3057\u3066\u304F\u3060\u3055\u3044\u3002"
         });
         if (title === null) return;
@@ -26042,9 +26082,14 @@
             body: JSON.stringify({ title })
           });
           await openBook(created.id);
+          if (startQuestionAfterCreate && currentBook?.id === created.id) await openQuestionEditor();
         } catch (error) {
           showError(error, () => void showBookList());
         }
+      }
+      async function openBookAndCreateQuestion(bookId) {
+        await openBook(bookId);
+        if (currentBook?.id === bookId) await openQuestionEditor();
       }
       async function openBook(bookId) {
         showLoading("\u554F\u984C\u96C6\u3092\u958B\u3044\u3066\u3044\u307E\u3059\u2026");
@@ -26073,8 +26118,12 @@
         headingText.append(metadata);
         heading.append(headingText);
         const practiceQuestions = book.questions.filter((question) => question.segments.some((segment) => segment.kind === "blank"));
-        const actions = element2("div", "actions");
-        actions.append(button("+ \u554F\u984C\u3092\u4F5C\u308B", "primary-button", () => void openQuestionEditor()));
+        const actions = element2("div", "actions book-actions");
+        actions.append(button(
+          isStandaloneApp() ? "PDF\u30FB\u624B\u5165\u529B\u3067\u554F\u984C\u3092\u8FFD\u52A0" : "+ \u554F\u984C\u3092\u4F5C\u308B",
+          "primary-button",
+          () => void openQuestionEditor()
+        ));
         const practiceButton = button("\u7DF4\u7FD2\u3059\u308B", "primary-button", () => showPracticeOrderSheet(practiceQuestions));
         practiceButton.disabled = practiceQuestions.length === 0;
         actions.append(practiceButton, button("\u554F\u984C\u96C6\u3092\u524A\u9664", "danger-button", () => void deleteCurrentBook()));
@@ -26085,7 +26134,11 @@
         if (book.questions.length === 0) {
           const empty = element2("section", "empty-state");
           empty.append(element2("h2", "", "\u554F\u984C\u304C\u3042\u308A\u307E\u305B\u3093"));
-          empty.append(element2("p", "muted", "\u300C+ \u554F\u984C\u3092\u4F5C\u308B\u300D\u304B\u3089\u6700\u521D\u306E\u554F\u984C\u3092\u4F5C\u308A\u307E\u3057\u3087\u3046\u3002"));
+          empty.append(element2(
+            "p",
+            "muted",
+            isStandaloneApp() ? "\u300CPDF\u30FB\u624B\u5165\u529B\u3067\u554F\u984C\u3092\u8FFD\u52A0\u300D\u3092\u62BC\u3057\u3066\u59CB\u3081\u307E\u3057\u3087\u3046\u3002" : "\u300C+ \u554F\u984C\u3092\u4F5C\u308B\u300D\u304B\u3089\u6700\u521D\u306E\u554F\u984C\u3092\u4F5C\u308A\u307E\u3057\u3087\u3046\u3002"
+          ));
           content.append(empty);
         } else {
           const list = element2("div", "question-list");
@@ -27636,7 +27689,7 @@ ${recognized}`;
       __publicField(this, "nextButton");
       __publicField(this, "readButton");
       __publicField(this, "cancelButton");
-      __publicField(this, "status", createElement("p", "pdf-ocr-status", "PDF\u3092\u9078\u3076\u3068\u3001\u30DA\u30FC\u30B8\u4E0A\u3092\u6307\u3067\u56F2\u3081\u307E\u3059\u3002"));
+      __publicField(this, "status", createElement("p", "pdf-ocr-status", "\u307E\u305A\u300C1. PDF\u3092\u9078\u3076\u300D\u3092\u62BC\u3057\u3066\u304F\u3060\u3055\u3044\u3002"));
       __publicField(this, "progress", createElement("progress", "pdf-ocr-progress"));
       __publicField(this, "language", createElement("select", "pdf-ocr-language"));
       __publicField(this, "resultArea", createElement("div", "pdf-ocr-result"));
@@ -27658,10 +27711,10 @@ ${recognized}`;
       const heading = createElement("div", "pdf-ocr-heading");
       const headingText = createElement("div");
       headingText.append(
-        createElement("h2", "", "PDF\u304B\u3089\u6587\u5B57\u3092\u8AAD\u307F\u53D6\u308B"),
-        createElement("p", "muted", "PDF\u3092\u958B\u304D\u3001\u6587\u5B57\u8D77\u3053\u3057\u3057\u305F\u3044\u90E8\u5206\u3092\u6307\u3067\u56DB\u89D2\u304F\u56F2\u3093\u3067\u304F\u3060\u3055\u3044\u3002")
+        createElement("h2", "", "PDF\u304B\u3089\u554F\u984C\u6587\u3092\u4F5C\u308B"),
+        createElement("p", "muted", "PDF\u3092\u9078\u3073\u3001\u6587\u5B57\u306B\u3057\u305F\u3044\u90E8\u5206\u3092\u6307\u3067\u56F2\u3080\u3060\u3051\u3067\u3059\u3002")
       );
-      const chooseButton = createButton("PDF\u3092\u9078\u3076", "secondary-button", () => this.fileInput.click());
+      const chooseButton = createButton("1. PDF\u3092\u9078\u3076", "primary-button", () => this.fileInput.click());
       heading.append(headingText, chooseButton);
       this.fileInput.type = "file";
       this.fileInput.accept = ".pdf,application/pdf";
@@ -27704,12 +27757,14 @@ ${recognized}`;
         this.language.append(option);
       }
       languageLabel.append(this.language);
-      this.readButton = createButton("\u9078\u629E\u7BC4\u56F2\u3092\u6587\u5B57\u8D77\u3053\u3057", "primary-button", () => void this.recognizeSelection());
+      this.readButton = createButton("2. \u56F2\u3093\u3060\u90E8\u5206\u3092\u6587\u5B57\u8D77\u3053\u3057", "primary-button", () => void this.recognizeSelection());
       this.readButton.disabled = true;
       this.cancelButton = createButton("\u30AD\u30E3\u30F3\u30BB\u30EB", "secondary-button", () => void this.cancelRecognition());
       this.cancelButton.hidden = true;
+      const languageOptions = createElement("details", "pdf-ocr-options");
+      languageOptions.append(createElement("summary", "", "\u8AAD\u307F\u53D6\u308A\u8A00\u8A9E\u3092\u5909\u66F4"), languageLabel);
       const ocrActions = createElement("div", "pdf-ocr-actions");
-      ocrActions.append(languageLabel, this.readButton, this.cancelButton);
+      ocrActions.append(this.readButton, this.cancelButton, languageOptions);
       this.progress.max = 1;
       this.progress.value = 0;
       this.progress.hidden = true;
@@ -27719,8 +27774,8 @@ ${recognized}`;
       this.resultTextarea.rows = 6;
       this.resultTextarea.placeholder = "\u6587\u5B57\u8D77\u3053\u3057\u7D50\u679C\u3092\u3053\u3053\u3067\u4FEE\u6B63\u3067\u304D\u307E\u3059\u3002";
       resultLabel.append(this.resultTextarea);
-      const replaceButton = createButton("\u554F\u984C\u6587\u306B\u53CD\u6620", "primary-button", () => this.applyResult(false));
-      const appendButton = createButton("\u554F\u984C\u6587\u306E\u672B\u5C3E\u306B\u8FFD\u52A0", "secondary-button", () => this.applyResult(true));
+      const replaceButton = createButton("3. \u554F\u984C\u6587\u306B\u5165\u308C\u308B", "primary-button", () => this.applyResult(false));
+      const appendButton = createButton("\u7D9A\u3051\u3066\u672B\u5C3E\u306B\u8FFD\u52A0", "secondary-button", () => this.applyResult(true));
       const resultActions = createElement("div", "pdf-ocr-result-actions");
       resultActions.append(replaceButton, appendButton);
       this.resultArea.hidden = true;
@@ -27814,6 +27869,7 @@ ${recognized}`;
         this.viewer.hidden = false;
         await this.renderCurrentPage();
         this.setStatus("\u6587\u5B57\u8D77\u3053\u3057\u3057\u305F\u3044\u90E8\u5206\u3092\u3001\u6307\u3067\u56DB\u89D2\u304F\u56F2\u3093\u3067\u304F\u3060\u3055\u3044\u3002");
+        this.viewer.scrollIntoView({ behavior: "smooth", block: "start" });
       } catch (error) {
         console.error("PDF\u306E\u8AAD\u307F\u8FBC\u307F\u306B\u5931\u6557\u3057\u307E\u3057\u305F\u3002", error);
         this.pdfDocument = null;
@@ -27901,10 +27957,11 @@ ${recognized}`;
         this.resultSource.textContent = sourceLabel;
         this.resultArea.hidden = false;
         this.setStatus("\u6587\u5B57\u8D77\u3053\u3057\u304C\u5B8C\u4E86\u3057\u307E\u3057\u305F\u3002");
-        this.resultTextarea.focus();
+        this.resultArea.scrollIntoView({ behavior: "smooth", block: "start" });
+        this.resultTextarea.focus({ preventScroll: true });
       } catch (error) {
         if (run !== this.recognitionRun) return;
-        const message = error instanceof Error && error.message === OCR_EMPTY_MESSAGE ? OCR_EMPTY_MESSAGE : "\u6587\u5B57\u8D77\u3053\u3057\u306B\u5931\u6557\u3057\u307E\u3057\u305F\u3002\u901A\u4FE1\u72B6\u614B\u3092\u78BA\u8A8D\u3057\u3001\u3082\u3046\u4E00\u5EA6\u304A\u8A66\u3057\u304F\u3060\u3055\u3044\u3002";
+        const message = error instanceof Error && error.message === OCR_EMPTY_MESSAGE ? OCR_EMPTY_MESSAGE : "\u6587\u5B57\u8D77\u3053\u3057\u306B\u5931\u6557\u3057\u307E\u3057\u305F\u3002\u7BC4\u56F2\u3092\u9078\u3073\u76F4\u3059\u304B\u3001\u624B\u5165\u529B\u3057\u3066\u304F\u3060\u3055\u3044\u3002";
         this.setStatus(message, true);
       } finally {
         if (run === this.recognitionRun) {
@@ -27988,7 +28045,8 @@ ${recognized}`;
       this.questionTextarea.value = nextText;
       this.questionTextarea.dispatchEvent(new Event("input", { bubbles: true }));
       this.setStatus(append ? "\u6587\u5B57\u8D77\u3053\u3057\u7D50\u679C\u3092\u554F\u984C\u6587\u306E\u672B\u5C3E\u306B\u8FFD\u52A0\u3057\u307E\u3057\u305F\u3002" : "\u6587\u5B57\u8D77\u3053\u3057\u7D50\u679C\u3092\u554F\u984C\u6587\u306B\u53CD\u6620\u3057\u307E\u3057\u305F\u3002");
-      this.questionTextarea.focus();
+      this.questionTextarea.scrollIntoView({ behavior: "smooth", block: "center" });
+      this.questionTextarea.focus({ preventScroll: true });
     }
     setBusy(busy) {
       this.busy = busy;
@@ -28103,14 +28161,14 @@ ${recognized}`;
       const actions = pageHeading?.querySelector(".actions");
       if (heading?.textContent !== "\u554F\u984C\u96C6" || !(actions instanceof HTMLElement)) return;
       if (actions.querySelector("[data-standalone-import]")) return;
-      const importButton = element("button", "secondary-button", "\u554F\u984C\u96C6JSON\u3092\u8AAD\u307F\u8FBC\u3080");
+      const importButton = element("button", "secondary-button", "\u4FDD\u5B58\u30C7\u30FC\u30BF\uFF08JSON\uFF09\u3092\u8AAD\u307F\u8FBC\u3080");
       importButton.type = "button";
       importButton.dataset.standaloneImport = "true";
       importButton.addEventListener("click", () => input.click());
-      actions.prepend(importButton);
+      actions.append(importButton);
     }
     function addExportButton() {
-      const actions = [...document.querySelectorAll(".page-heading .actions")].find((candidate) => [...candidate.querySelectorAll("button")].some((button) => button.textContent?.startsWith("+ \u554F\u984C\u3092\u4F5C\u308B")));
+      const actions = document.querySelector(".page-heading .book-actions");
       if (!actions || actions.querySelector("[data-standalone-export]")) return;
       const exportButton = element("button", "secondary-button", "\u30D5\u30A1\u30A4\u30EB\u3078\u66F8\u304D\u51FA\u3057");
       exportButton.type = "button";
@@ -28136,27 +28194,6 @@ ${recognized}`;
       const deleteButton = [...actions.querySelectorAll("button")].find((button) => button.textContent === "\u554F\u984C\u96C6\u3092\u524A\u9664");
       actions.insertBefore(exportButton, deleteButton ?? null);
     }
-    function addPdfEntryGuidance() {
-      const pageHeading = document.querySelector(".page-heading");
-      const heading = pageHeading?.querySelector("h1");
-      const actions = pageHeading?.querySelector(".actions");
-      if (!pageHeading || !(actions instanceof HTMLElement)) return;
-      if (heading?.textContent === "\u554F\u984C\u96C6") {
-        if (document.querySelector("[data-standalone-pdf-guide]")) return;
-        const guide = element(
-          "p",
-          "standalone-pdf-guide",
-          "PDF\u3092\u6587\u5B57\u8D77\u3053\u3057\u3059\u308B\u5834\u5408\uFF1A\u300C\u65B0\u3057\u3044\u554F\u984C\u96C6\u300D\u2192\u300C\u554F\u984C\u3092\u4F5C\u308B\uFF08PDF\u30FB\u624B\u5165\u529B\uFF09\u300D\u2192\u300CPDF\u3092\u9078\u3076\u300D\u306E\u9806\u306B\u9032\u3093\u3067\u304F\u3060\u3055\u3044\u3002"
-        );
-        guide.dataset.standalonePdfGuide = "true";
-        pageHeading.after(guide);
-        return;
-      }
-      const createButton2 = [...actions.querySelectorAll("button")].find((button) => button.textContent?.startsWith("+ \u554F\u984C\u3092\u4F5C\u308B"));
-      if (createButton2 && createButton2.textContent !== "+ \u554F\u984C\u3092\u4F5C\u308B\uFF08PDF\u30FB\u624B\u5165\u529B\uFF09") {
-        createButton2.textContent = "+ \u554F\u984C\u3092\u4F5C\u308B\uFF08PDF\u30FB\u624B\u5165\u529B\uFF09";
-      }
-    }
     let scheduled = false;
     const enhance = () => {
       scheduled = false;
@@ -28165,7 +28202,6 @@ ${recognized}`;
       }
       addImportButton();
       addExportButton();
-      addPdfEntryGuidance();
     };
     const observer = new MutationObserver(() => {
       if (scheduled) return;
@@ -28176,6 +28212,7 @@ ${recognized}`;
     enhance();
   }
   async function start() {
+    document.documentElement.dataset.appMode = "standalone";
     let store;
     try {
       store = new LocalProblemBookStore(window.localStorage);
