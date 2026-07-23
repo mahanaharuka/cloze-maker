@@ -28153,7 +28153,9 @@ ${recognized}`;
         return;
       }
       const createButton2 = [...actions.querySelectorAll("button")].find((button) => button.textContent?.startsWith("+ \u554F\u984C\u3092\u4F5C\u308B"));
-      if (createButton2) createButton2.textContent = "+ \u554F\u984C\u3092\u4F5C\u308B\uFF08PDF\u30FB\u624B\u5165\u529B\uFF09";
+      if (createButton2 && createButton2.textContent !== "+ \u554F\u984C\u3092\u4F5C\u308B\uFF08PDF\u30FB\u624B\u5165\u529B\uFF09") {
+        createButton2.textContent = "+ \u554F\u984C\u3092\u4F5C\u308B\uFF08PDF\u30FB\u624B\u5165\u529B\uFF09";
+      }
     }
     let scheduled = false;
     const enhance = () => {

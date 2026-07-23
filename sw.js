@@ -1,4 +1,4 @@
-const CACHE_NAME = 'cloze-maker-standalone-v3-pdf-entry'
+const CACHE_NAME = 'cloze-maker-standalone-v4-button-fix'
 const PRECACHE_PATHS = [
   './',
   './index.html',
