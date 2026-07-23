@@ -25737,6 +25737,10 @@
       var currentBook = null;
       var practiceState = null;
       var editorState = null;
+      function protectUnsavedEditor(active) {
+        document.documentElement.dataset.unsavedWork = active ? "true" : "false";
+        if (!active) window.dispatchEvent(new Event("cloze:editor-clean"));
+      }
       function isStandaloneApp() {
         return document.documentElement.dataset.appMode === "standalone";
       }
@@ -25984,6 +25988,7 @@
         return paragraph;
       }
       async function showBookList() {
+        protectUnsavedEditor(false);
         currentBook = null;
         practiceState = null;
         editorState = null;
@@ -26103,6 +26108,7 @@
       function renderBook() {
         const book = currentBook;
         if (!book) return;
+        protectUnsavedEditor(false);
         document.title = `${book.title} | Cloze Maker \u30B9\u30DE\u30DB\u7248`;
         const content = document.createDocumentFragment();
         const summary = element2("section", "book-summary");
@@ -26221,7 +26227,8 @@
             selectionScrollTop: 0,
             message: "",
             busy: false,
-            distractorDrafts: {}
+            distractorDrafts: {},
+            quickQa: null
           };
           renderQuestionEditor(true);
         } catch (error) {
@@ -26308,6 +26315,316 @@
       function renderEditorMessage(state) {
         return state.message ? element2("p", "editor-message", state.message) : null;
       }
+      function startQuickQaBatch(state) {
+        if (state.questionId) return;
+        const sourceText = state.editedText.trim();
+        if (!sourceText) {
+          state.message = "\u5148\u306BPDF\u3092\u6587\u5B57\u8D77\u3053\u3057\u3059\u308B\u304B\u3001\u5143\u306B\u306A\u308B\u6587\u7AE0\u3092\u5165\u529B\u3057\u3066\u304F\u3060\u3055\u3044\u3002";
+          renderQuestionEditor();
+          return;
+        }
+        state.quickQa = {
+          sourceText,
+          stage: "question",
+          answerInputMode: "source",
+          rangeAnchor: null,
+          pendingRange: null,
+          selectionScrollTop: 0,
+          questionText: "",
+          manualAnswer: "",
+          pairs: [],
+          answerMode: "written",
+          busy: false
+        };
+        state.message = "";
+        renderQuestionEditor(true);
+      }
+      function resetQuickQaRange(state, message = "") {
+        if (!state.quickQa) return;
+        state.quickQa.rangeAnchor = null;
+        state.quickQa.pendingRange = null;
+        state.message = message;
+      }
+      function normalizedQuickQaRange(first, second, sourceText) {
+        const textLength = sourceText.length;
+        const start2 = Math.max(0, Math.min(textLength, Math.min(first, second)));
+        let end = Math.max(0, Math.min(textLength, Math.max(first, second)));
+        if (end === start2 && start2 < textLength) {
+          end = start2 + (sourceText.codePointAt(start2) > 65535 ? 2 : 1);
+        }
+        return { start: start2, end };
+      }
+      function quickQaSelectedText(quickQa) {
+        if (!quickQa.pendingRange) return "";
+        return quickQa.sourceText.slice(quickQa.pendingRange.start, quickQa.pendingRange.end).trim();
+      }
+      function textOffsetAtPoint(container, clientX, clientY) {
+        const bounds = container.getBoundingClientRect();
+        const x = Math.min(bounds.right - 1, Math.max(bounds.left + 1, clientX));
+        const y = Math.min(bounds.bottom - 1, Math.max(bounds.top + 1, clientY));
+        let node = null;
+        let offset = 0;
+        if (typeof document.caretPositionFromPoint === "function") {
+          const position = document.caretPositionFromPoint(x, y);
+          node = position?.offsetNode || null;
+          offset = position?.offset || 0;
+        } else if (typeof document.caretRangeFromPoint === "function") {
+          const position = document.caretRangeFromPoint(x, y);
+          node = position?.startContainer || null;
+          offset = position?.startOffset || 0;
+        }
+        if (!node || !container.contains(node)) return null;
+        const textLength = container.textContent.length;
+        if (node.nodeType === Node.TEXT_NODE && node.parentNode === container) {
+          return Math.min(textLength, Math.max(0, offset));
+        }
+        try {
+          const range = document.createRange();
+          range.selectNodeContents(container);
+          range.setEnd(node, offset);
+          return Math.min(textLength, range.toString().length);
+        } catch {
+          return null;
+        }
+      }
+      function showQuickQaDragSelection(container, first, second) {
+        const textNode = container.firstChild;
+        if (!textNode || textNode.nodeType !== Node.TEXT_NODE || container.childNodes.length !== 1) return;
+        const textLength = textNode.textContent.length;
+        const start2 = Math.max(0, Math.min(textLength, Math.min(first, second)));
+        const end = Math.max(0, Math.min(textLength, Math.max(first, second)));
+        const range = document.createRange();
+        range.setStart(textNode, start2);
+        range.setEnd(textNode, end);
+        const selection = window.getSelection();
+        if (!selection) return;
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+      function clearQuickQaDragSelection(container) {
+        const selection = window.getSelection();
+        if (selection?.anchorNode && container.contains(selection.anchorNode)) selection.removeAllRanges();
+      }
+      function renderQuickQaHighlight(container, sourceText, range, anchor = null) {
+        if (range && range.end > range.start) {
+          const selected = element2("mark", "quick-qa-source-highlight", sourceText.slice(range.start, range.end));
+          container.replaceChildren(
+            document.createTextNode(sourceText.slice(0, range.start)),
+            selected,
+            document.createTextNode(sourceText.slice(range.end))
+          );
+          return;
+        }
+        if (Number.isInteger(anchor) && anchor >= 0 && anchor < sourceText.length) {
+          const length = sourceText.codePointAt(anchor) > 65535 ? 2 : 1;
+          const marker = element2("mark", "quick-qa-source-anchor", sourceText.slice(anchor, anchor + length));
+          container.replaceChildren(
+            document.createTextNode(sourceText.slice(0, anchor)),
+            marker,
+            document.createTextNode(sourceText.slice(anchor + length))
+          );
+          return;
+        }
+        container.textContent = sourceText;
+      }
+      function renderQuickQaRangePicker(state) {
+        const quickQa = state.quickQa;
+        const workspace = element2("div", "selection-scroll-workspace quick-qa-selection-workspace");
+        workspace.classList.add(quickQa.stage === "question" ? "is-question" : "is-answer");
+        const source = element2("div", "selectable-text quick-qa-source-text");
+        source.tabIndex = 0;
+        source.setAttribute("role", "textbox");
+        source.setAttribute("aria-readonly", "true");
+        source.setAttribute(
+          "aria-label",
+          quickQa.stage === "question" ? "\u554F\u984C\u306B\u3059\u308B\u6587\u7AE0\u3092\u9078\u3076" : "\u7B54\u3048\u306B\u3059\u308B\u6587\u7AE0\u3092\u9078\u3076"
+        );
+        renderQuickQaHighlight(source, quickQa.sourceText, quickQa.pendingRange, quickQa.rangeAnchor);
+        let activeSelection = null;
+        source.addEventListener("pointerdown", (event) => {
+          if (!event.isPrimary || activeSelection) return;
+          if (event.pointerType === "mouse" && event.button !== 0) return;
+          const offset = textOffsetAtPoint(source, event.clientX, event.clientY);
+          if (offset === null) return;
+          activeSelection = {
+            pointerId: event.pointerId,
+            anchor: offset,
+            current: offset,
+            moved: false
+          };
+          source.textContent = quickQa.sourceText;
+          document.documentElement.classList.add("selection-gesture-active");
+          source.setPointerCapture(event.pointerId);
+          event.preventDefault();
+        });
+        source.addEventListener("pointermove", (event) => {
+          if (!activeSelection || activeSelection.pointerId !== event.pointerId) return;
+          const offset = textOffsetAtPoint(source, event.clientX, event.clientY);
+          if (offset === null) return;
+          if (offset !== activeSelection.anchor) activeSelection.moved = true;
+          activeSelection.current = offset;
+          showQuickQaDragSelection(source, activeSelection.anchor, offset);
+          event.preventDefault();
+        });
+        source.addEventListener("pointerup", (event) => {
+          if (!activeSelection || activeSelection.pointerId !== event.pointerId) return;
+          const selection = activeSelection;
+          activeSelection = null;
+          clearQuickQaDragSelection(source);
+          document.documentElement.classList.remove("selection-gesture-active");
+          const offset = textOffsetAtPoint(source, event.clientX, event.clientY) ?? selection.current;
+          event.preventDefault();
+          if (selection.moved) {
+            quickQa.rangeAnchor = selection.anchor;
+            quickQa.pendingRange = normalizedQuickQaRange(selection.anchor, offset, quickQa.sourceText);
+            state.message = "\u9078\u629E\u3057\u305F\u6587\u7AE0\u3092\u78BA\u8A8D\u3057\u3066\u3001\u4E0B\u306E\u78BA\u5B9A\u30DC\u30BF\u30F3\u3092\u62BC\u3057\u3066\u304F\u3060\u3055\u3044\u3002";
+          } else if (quickQa.rangeAnchor === null || quickQa.pendingRange) {
+            quickQa.rangeAnchor = offset;
+            quickQa.pendingRange = null;
+            state.message = "\u7D42\u4E86\u4F4D\u7F6E\u3092\u30BF\u30C3\u30D7\u3057\u3066\u304F\u3060\u3055\u3044\u3002";
+          } else {
+            quickQa.pendingRange = normalizedQuickQaRange(quickQa.rangeAnchor, offset, quickQa.sourceText);
+            state.message = "\u9078\u629E\u3057\u305F\u6587\u7AE0\u3092\u78BA\u8A8D\u3057\u3066\u3001\u4E0B\u306E\u78BA\u5B9A\u30DC\u30BF\u30F3\u3092\u62BC\u3057\u3066\u304F\u3060\u3055\u3044\u3002";
+          }
+          renderQuestionEditor();
+        });
+        const cancel = (event) => {
+          if (!activeSelection || activeSelection.pointerId !== event.pointerId) return;
+          activeSelection = null;
+          clearQuickQaDragSelection(source);
+          document.documentElement.classList.remove("selection-gesture-active");
+          renderQuestionEditor();
+        };
+        source.addEventListener("pointercancel", cancel);
+        source.addEventListener("lostpointercapture", cancel);
+        source.addEventListener("scroll", () => {
+          quickQa.selectionScrollTop = source.scrollTop;
+        }, { passive: true });
+        workspace.append(
+          source,
+          createVerticalScrollRail2(source, "\u5143\u306E\u6587\u7AE0\u3092\u4E0A\u4E0B\u306B\u79FB\u52D5", (scrollTop) => {
+            quickQa.selectionScrollTop = scrollTop;
+          })
+        );
+        requestAnimationFrame(() => {
+          source.scrollTop = quickQa.selectionScrollTop || 0;
+        });
+        return workspace;
+      }
+      function confirmQuickQaQuestion(state) {
+        const quickQa = state.quickQa;
+        if (!quickQa) return;
+        const questionText = quickQaSelectedText(quickQa);
+        if (!questionText) {
+          state.message = "\u554F\u984C\u306B\u3059\u308B\u6587\u7AE0\u3092\u9078\u629E\u3057\u3066\u304F\u3060\u3055\u3044\u3002";
+          renderQuestionEditor();
+          return;
+        }
+        quickQa.questionText = questionText;
+        quickQa.stage = "answer";
+        quickQa.answerInputMode = "source";
+        resetQuickQaRange(state, "\u6B21\u306B\u7B54\u3048\u3092\u6587\u7AE0\u304B\u3089\u9078\u3076\u304B\u3001\u624B\u5165\u529B\u3057\u3066\u304F\u3060\u3055\u3044\u3002");
+        renderQuestionEditor(true);
+      }
+      function addQuickQaPair(state) {
+        const quickQa = state.quickQa;
+        if (!quickQa) return;
+        const answerText = quickQa.answerInputMode === "manual" ? quickQa.manualAnswer.trim() : quickQaSelectedText(quickQa);
+        if (!answerText) {
+          state.message = quickQa.answerInputMode === "manual" ? "\u7B54\u3048\u3092\u5165\u529B\u3057\u3066\u304F\u3060\u3055\u3044\u3002" : "\u7B54\u3048\u306B\u3059\u308B\u6587\u7AE0\u3092\u9078\u629E\u3057\u3066\u304F\u3060\u3055\u3044\u3002";
+          renderQuestionEditor();
+          return;
+        }
+        if (!quickQa.questionText.trim()) {
+          quickQa.stage = "question";
+          state.message = "\u554F\u984C\u3092\u9078\u3073\u76F4\u3057\u3066\u304F\u3060\u3055\u3044\u3002";
+          renderQuestionEditor(true);
+          return;
+        }
+        if (quickQa.pairs.length >= 50) {
+          quickQa.stage = "review";
+          state.message = "\u4E00\u5EA6\u306B\u4F5C\u6210\u3067\u304D\u308B50\u554F\u3078\u5230\u9054\u3057\u307E\u3057\u305F\u3002\u5185\u5BB9\u3092\u78BA\u8A8D\u3057\u3066\u304F\u3060\u3055\u3044\u3002";
+          renderQuestionEditor(true);
+          return;
+        }
+        quickQa.pairs.push({
+          id: createId3(),
+          questionText: quickQa.questionText.trim(),
+          answerText
+        });
+        quickQa.questionText = "";
+        quickQa.manualAnswer = "";
+        quickQa.stage = quickQa.pairs.length >= 50 ? "review" : "question";
+        resetQuickQaRange(
+          state,
+          quickQa.stage === "review" ? "50\u554F\u767B\u9332\u3057\u307E\u3057\u305F\u3002\u5185\u5BB9\u3092\u78BA\u8A8D\u3057\u3066\u4FDD\u5B58\u3057\u3066\u304F\u3060\u3055\u3044\u3002" : `${quickQa.pairs.length}\u554F\u76EE\u3092\u8FFD\u52A0\u3057\u307E\u3057\u305F\u3002\u6B21\u306E\u554F\u984C\u3092\u9078\u3093\u3067\u304F\u3060\u3055\u3044\u3002`
+        );
+        renderQuestionEditor(true);
+      }
+      function quickQaQuestionInput(pair, allPairs, answerMode) {
+        const questionText = pair.questionText.trim();
+        const answerText = pair.answerText.trim();
+        const prefix = `${questionText}
+\u7B54\u3048\uFF1A`;
+        const candidateId = createId3();
+        const distractors = answerMode === "choice" ? [...new Set(allPairs.map((item) => item.answerText.trim()).filter((item) => item && item !== answerText))].slice(0, 3) : [];
+        return {
+          editedText: `${prefix}${answerText}`,
+          answerCandidates: [{
+            id: candidateId,
+            answerText,
+            distractors,
+            startPosition: prefix.length,
+            endPosition: prefix.length + answerText.length,
+            enabled: true,
+            displayOrder: 1
+          }],
+          selectedBlankCandidateIds: [candidateId],
+          blankCount: 1,
+          answerMode,
+          mixBlankAnswersIntoChoices: false,
+          explanation: ""
+        };
+      }
+      async function saveQuickQaBatch(state) {
+        const quickQa = state.quickQa;
+        if (!quickQa || quickQa.busy || quickQa.pairs.length === 0) return;
+        const invalidPair = quickQa.pairs.find((pair) => !pair.questionText.trim() || !pair.answerText.trim());
+        if (invalidPair) {
+          state.message = "\u554F\u984C\u6587\u307E\u305F\u306F\u7B54\u3048\u304C\u7A7A\u306E\u9805\u76EE\u304C\u3042\u308A\u307E\u3059\u3002";
+          renderQuestionEditor();
+          return;
+        }
+        if (quickQa.answerMode === "choice") {
+          const uniqueAnswers = new Set(quickQa.pairs.map((pair) => pair.answerText.trim()));
+          if (uniqueAnswers.size < 2) {
+            state.message = "\u9078\u629E\u5F0F\u306B\u306F\u7570\u306A\u308B\u7B54\u3048\u304C2\u7A2E\u985E\u4EE5\u4E0A\u5FC5\u8981\u3067\u3059\u3002\u7B54\u3048\u3092\u8FFD\u52A0\u307E\u305F\u306F\u4FEE\u6B63\u3057\u3066\u304F\u3060\u3055\u3044\u3002";
+            renderQuestionEditor();
+            return;
+          }
+        }
+        quickQa.busy = true;
+        state.message = "";
+        renderQuestionEditor();
+        try {
+          const questions = quickQa.pairs.map((pair) => quickQaQuestionInput(
+            pair,
+            quickQa.pairs,
+            quickQa.answerMode
+          ));
+          await getJson(`./__local_api__/books/${encodeURIComponent(state.bookId)}/questions/batch`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ questions })
+          });
+          editorState = null;
+          await openBook(state.bookId);
+        } catch (error) {
+          quickQa.busy = false;
+          state.message = error instanceof Error ? error.message : String(error);
+          renderQuestionEditor();
+        }
+      }
       function renderEditorStepOne(state) {
         const section = element2("section", "editor-step");
         section.append(element2("h1", "", "\u554F\u984C\u6587"));
@@ -26319,6 +26636,10 @@
         textarea.rows = 9;
         textarea.value = state.editedText;
         textarea.placeholder = "\u4F8B\uFF1A\u65E5\u672C\u306E\u9996\u90FD\u306F\u6771\u4EAC\u3067\u3059\u3002";
+        const quickQaButton = button("\u3053\u306E\u6587\u7AE0\u304B\u3089\u554F\u984C\u30FB\u7B54\u3048\u3092\u7D9A\u3051\u3066\u4F5C\u308B", "primary-button wide-button", () => {
+          startQuickQaBatch(state);
+        });
+        quickQaButton.disabled = Boolean(state.questionId) || !state.editedText.trim();
         textarea.addEventListener("input", () => {
           if (textarea.value !== state.editedText && state.answerCandidates.length > 0) {
             state.answerCandidates = [];
@@ -26327,8 +26648,19 @@
             state.message = "\u554F\u984C\u6587\u3092\u5909\u66F4\u3057\u305F\u305F\u3081\u3001\u767B\u9332\u6E08\u307F\u306E\u8A9E\u53E5\u3092\u30EA\u30BB\u30C3\u30C8\u3057\u307E\u3057\u305F\u3002";
           }
           state.editedText = textarea.value;
+          quickQaButton.disabled = Boolean(state.questionId) || !state.editedText.trim();
         });
+        textarea.addEventListener("cloze:start-quick-qa", () => startQuickQaBatch(state));
         section.append(label, textarea);
+        if (!state.questionId) {
+          const quickQaCard = element2("section", "quick-qa-entry");
+          quickQaCard.append(
+            element2("h2", "", "\u5927\u91CF\u306E\u6587\u7AE0\u304B\u3089\u4E00\u554F\u4E00\u7B54\u3092\u4F5C\u308B"),
+            element2("p", "muted", "\u554F\u984C\u306E\u7BC4\u56F2\u2192\u7B54\u3048\u306E\u7BC4\u56F2\u3092\u9806\u756A\u306B\u9078\u3073\u3001\u6700\u592750\u554F\u3092\u307E\u3068\u3081\u3066\u4FDD\u5B58\u3067\u304D\u307E\u3059\u3002\u7B54\u3048\u306F\u624B\u5165\u529B\u3082\u3067\u304D\u307E\u3059\u3002"),
+            quickQaButton
+          );
+          section.append(quickQaCard);
+        }
         return section;
       }
       function candidateAtPosition(candidates, start2, end) {
@@ -26420,14 +26752,19 @@
           onScroll?.(scroller.scrollTop);
         };
         let activePointerId = null;
+        let pointerGrabOffset = 0;
         const scrollToPointer = (clientY) => {
           const bounds = track.getBoundingClientRect();
           const maximum = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-          const ratio = Math.min(1, Math.max(0, (clientY - bounds.top) / Math.max(1, bounds.height)));
-          scroller.scrollTop = maximum * ratio;
+          const thumbHeight = thumb.getBoundingClientRect().height;
+          const travel = Math.max(0, bounds.height - thumbHeight);
+          const thumbTop = Math.min(travel, Math.max(0, clientY - bounds.top - pointerGrabOffset));
+          scroller.scrollTop = travel === 0 ? 0 : maximum * (thumbTop / travel);
         };
         track.addEventListener("pointerdown", (event) => {
           activePointerId = event.pointerId;
+          const thumbBounds = thumb.getBoundingClientRect();
+          pointerGrabOffset = event.clientY >= thumbBounds.top && event.clientY <= thumbBounds.bottom ? event.clientY - thumbBounds.top : thumbBounds.height / 2;
           track.setPointerCapture(event.pointerId);
           scrollToPointer(event.clientY);
           event.preventDefault();
@@ -26827,9 +27164,256 @@
           renderQuestionEditor();
         }
       }
+      async function exitQuickQaEditor(state) {
+        const quickQa = state.quickQa;
+        if (!quickQa) return;
+        if (quickQa.pairs.length > 0) {
+          const confirmed = await showModal({
+            title: "\u901A\u5E38\u306E\u554F\u984C\u4F5C\u6210\u3078\u623B\u308B",
+            message: `\u767B\u9332\u9014\u4E2D\u306E${quickQa.pairs.length}\u554F\u306F\u307E\u3060\u4FDD\u5B58\u3055\u308C\u3066\u3044\u307E\u305B\u3093\u3002\u53D6\u308A\u6D88\u3057\u3066\u623B\u308A\u307E\u3059\u304B\uFF1F`,
+            confirmLabel: "\u53D6\u308A\u6D88\u3057\u3066\u623B\u308B",
+            danger: true
+          });
+          if (!confirmed) return;
+        }
+        state.quickQa = null;
+        state.message = "";
+        renderQuestionEditor(true);
+      }
+      function removeQuickQaPair(state, pairId) {
+        const quickQa = state.quickQa;
+        if (!quickQa) return;
+        quickQa.pairs = quickQa.pairs.filter((pair) => pair.id !== pairId);
+        if (quickQa.pairs.length === 0 && quickQa.stage === "review") quickQa.stage = "question";
+        state.message = "\u767B\u9332\u6E08\u307F\u306E\u554F\u984C\u3092\u524A\u9664\u3057\u307E\u3057\u305F\u3002";
+        renderQuestionEditor();
+      }
+      function renderQuickQaProgress(quickQa) {
+        const progress = element2("ol", "quick-qa-progress");
+        const current = quickQa.stage === "question" ? 1 : quickQa.stage === "answer" ? 2 : 3;
+        for (const [index, label] of ["\u554F\u984C\u3092\u9078\u3076", "\u7B54\u3048\u3092\u9078\u3076", "\u78BA\u8A8D\u30FB\u4FDD\u5B58"].entries()) {
+          const item = element2("li", index + 1 === current ? "current" : index + 1 < current ? "done" : "");
+          item.append(element2("span", "", String(index + 1)), element2("small", "", label));
+          progress.append(item);
+        }
+        return progress;
+      }
+      function renderQuickQaPairList(state, editable = false) {
+        const quickQa = state.quickQa;
+        const list = element2("div", editable ? "quick-qa-review-list" : "quick-qa-pair-list");
+        quickQa.pairs.forEach((pair, index) => {
+          const card = element2("article", editable ? "quick-qa-review-card" : "quick-qa-pair-card");
+          const heading = element2("div", "quick-qa-pair-heading");
+          heading.append(
+            element2("strong", "", `\u554F\u984C ${index + 1}`),
+            button("\u524A\u9664", "text-button", () => removeQuickQaPair(state, pair.id))
+          );
+          card.append(heading);
+          if (editable) {
+            const questionLabel = element2("label", "quick-qa-edit-field", "\u554F\u984C");
+            const question = element2("textarea", "question-textarea");
+            question.rows = 3;
+            question.value = pair.questionText;
+            question.addEventListener("input", () => {
+              pair.questionText = question.value;
+            });
+            questionLabel.append(question);
+            const answerLabel = element2("label", "quick-qa-edit-field", "\u7B54\u3048");
+            const answer = element2("input", "text-input");
+            answer.type = "text";
+            answer.value = pair.answerText;
+            answer.addEventListener("input", () => {
+              pair.answerText = answer.value;
+            });
+            answerLabel.append(answer);
+            card.append(questionLabel, answerLabel);
+          } else {
+            card.append(
+              element2("p", "quick-qa-pair-question", pair.questionText),
+              element2("p", "quick-qa-pair-answer", `\u7B54\u3048\uFF1A${pair.answerText}`)
+            );
+          }
+          list.append(card);
+        });
+        return list;
+      }
+      function renderQuickQaEditor(state, scrollToTop = false) {
+        const quickQa = state.quickQa;
+        if (!quickQa) return;
+        document.title = "\u4E00\u554F\u4E00\u7B54\u3092\u307E\u3068\u3081\u3066\u4F5C\u308B | Cloze Maker \u30B9\u30DE\u30DB\u7248";
+        const layout = element2("div", "editor-layout quick-qa-layout");
+        layout.append(
+          button("\u2190 \u901A\u5E38\u306E\u554F\u984C\u4F5C\u6210\u3078\u623B\u308B", "text-button", () => void exitQuickQaEditor(state)),
+          renderQuickQaProgress(quickQa)
+        );
+        const section = element2("section", "editor-step quick-qa-step");
+        const count = element2("div", "quick-qa-count", `\u767B\u9332\u6E08\u307F ${quickQa.pairs.length} / 50\u554F`);
+        section.append(count);
+        if (quickQa.stage === "question") {
+          const questionNumber = quickQa.pairs.length + 1;
+          section.append(
+            element2("h1", "", `${questionNumber}\u554F\u76EE\u306E\u554F\u984C\u3092\u9078\u3076`),
+            element2("p", "lead", "\u554F\u984C\u306B\u3057\u305F\u3044\u7BC4\u56F2\u3092\u6307\u3067\u306A\u305E\u308A\u307E\u3059\u30022\u56DE\u30BF\u30C3\u30D7\u3057\u3066\u958B\u59CB\u30FB\u7D42\u4E86\u3092\u6C7A\u3081\u308B\u3053\u3068\u3082\u3067\u304D\u307E\u3059\u3002"),
+            renderQuickQaRangePicker(state)
+          );
+          const selectedText = quickQaSelectedText(quickQa);
+          if (selectedText) {
+            const preview = element2("div", "quick-qa-selection-preview is-question");
+            preview.append(element2("strong", "", "\u9078\u629E\u3057\u305F\u554F\u984C"), element2("p", "", selectedText));
+            section.append(preview);
+          }
+          const actions = element2("div", "quick-qa-stage-actions");
+          if (quickQa.rangeAnchor !== null || quickQa.pendingRange) {
+            actions.append(button("\u9078\u629E\u3092\u3084\u308A\u76F4\u3059", "secondary-button", () => {
+              resetQuickQaRange(state);
+              renderQuestionEditor();
+            }));
+          }
+          const confirm = button("\u3053\u306E\u7BC4\u56F2\u3092\u554F\u984C\u306B\u3059\u308B", "primary-button", () => confirmQuickQaQuestion(state));
+          confirm.disabled = !selectedText;
+          actions.append(confirm);
+          section.append(actions);
+        } else if (quickQa.stage === "answer") {
+          section.append(element2("h1", "", `${quickQa.pairs.length + 1}\u554F\u76EE\u306E\u7B54\u3048\u3092\u6C7A\u3081\u308B`));
+          const questionPreview = element2("div", "quick-qa-selection-preview is-question");
+          questionPreview.append(element2("strong", "", "\u554F\u984C"), element2("p", "", quickQa.questionText));
+          section.append(questionPreview);
+          const modes = element2("div", "mode-options quick-qa-answer-modes");
+          for (const [value, labelText, description] of [
+            ["source", "\u6587\u7AE0\u304B\u3089\u9078\u3076", "\u5143\u306E\u6587\u7AE0\u3092\u306A\u305E\u308B\u30FB2\u56DE\u30BF\u30C3\u30D7"],
+            ["manual", "\u624B\u5165\u529B", "\u30AD\u30FC\u30DC\u30FC\u30C9\u3067\u7B54\u3048\u3092\u5165\u529B"]
+          ]) {
+            const label = element2("label", "mode-option creation-mode-option");
+            const radio = element2("input");
+            radio.type = "radio";
+            radio.name = "quick-qa-answer-input";
+            radio.value = value;
+            radio.checked = quickQa.answerInputMode === value;
+            radio.addEventListener("change", () => {
+              quickQa.answerInputMode = value;
+              resetQuickQaRange(state);
+              renderQuestionEditor();
+            });
+            const text = element2("span", "");
+            text.append(element2("strong", "", labelText), element2("small", "", description));
+            label.append(radio, text);
+            modes.append(label);
+          }
+          section.append(modes);
+          let answerText = "";
+          let addButton = null;
+          if (quickQa.answerInputMode === "source") {
+            section.append(
+              element2("p", "lead", "\u7B54\u3048\u306B\u3057\u305F\u3044\u7BC4\u56F2\u3092\u9078\u3093\u3067\u304F\u3060\u3055\u3044\u3002\u554F\u984C\u3068\u306F\u5225\u306E\u5834\u6240\u3084\u5225\u30DA\u30FC\u30B8\u306E\u6587\u7AE0\u3067\u3082\u69CB\u3044\u307E\u305B\u3093\u3002"),
+              renderQuickQaRangePicker(state)
+            );
+            answerText = quickQaSelectedText(quickQa);
+            if (answerText) {
+              const answerPreview = element2("div", "quick-qa-selection-preview is-answer");
+              answerPreview.append(element2("strong", "", "\u9078\u629E\u3057\u305F\u7B54\u3048"), element2("p", "", answerText));
+              section.append(answerPreview);
+            }
+          } else {
+            const answerLabel = element2("label", "field-label", "\u7B54\u3048");
+            const answerInput = element2("input", "text-input quick-qa-manual-answer");
+            answerInput.type = "text";
+            answerInput.value = quickQa.manualAnswer;
+            answerInput.placeholder = "\u7B54\u3048\u3092\u5165\u529B";
+            answerInput.addEventListener("input", () => {
+              quickQa.manualAnswer = answerInput.value;
+              if (addButton) addButton.disabled = !answerInput.value.trim();
+            });
+            answerLabel.append(answerInput);
+            section.append(answerLabel);
+            answerText = quickQa.manualAnswer.trim();
+          }
+          const actions = element2("div", "quick-qa-stage-actions");
+          actions.append(button("\u554F\u984C\u3092\u9078\u3073\u76F4\u3059", "secondary-button", () => {
+            quickQa.stage = "question";
+            quickQa.questionText = "";
+            quickQa.manualAnswer = "";
+            resetQuickQaRange(state);
+            renderQuestionEditor(true);
+          }));
+          addButton = button(`\u3053\u306E\u7B54\u3048\u3067${quickQa.pairs.length + 1}\u554F\u76EE\u3092\u8FFD\u52A0`, "primary-button", () => addQuickQaPair(state));
+          addButton.disabled = !answerText;
+          actions.append(addButton);
+          section.append(actions);
+        } else {
+          section.append(
+            element2("h1", "", `${quickQa.pairs.length}\u554F\u3092\u78BA\u8A8D\u3057\u3066\u4FDD\u5B58`),
+            element2("p", "lead", "\u554F\u984C\u3068\u7B54\u3048\u3092\u4FEE\u6B63\u3067\u304D\u307E\u3059\u3002\u8A18\u8FF0\u5F0F\u307E\u305F\u306F\u9078\u629E\u5F0F\u3092\u9078\u3093\u3067\u307E\u3068\u3081\u3066\u4FDD\u5B58\u3057\u3066\u304F\u3060\u3055\u3044\u3002"),
+            renderQuickQaPairList(state, true)
+          );
+          const modes = element2("div", "mode-options quick-qa-save-modes");
+          for (const [value, labelText] of [["written", "\u8A18\u8FF0\u5F0F"], ["choice", "\u9078\u629E\u5F0F"]]) {
+            const label = element2("label", "mode-option");
+            const radio = element2("input");
+            radio.type = "radio";
+            radio.name = "quick-qa-answer-mode";
+            radio.value = value;
+            radio.checked = quickQa.answerMode === value;
+            radio.addEventListener("change", () => {
+              quickQa.answerMode = value;
+              state.message = "";
+              renderQuestionEditor();
+            });
+            label.append(radio, element2("span", "", labelText));
+            modes.append(label);
+          }
+          section.append(modes);
+          if (quickQa.answerMode === "choice") {
+            section.append(element2(
+              "p",
+              "choice-option-preview",
+              "\u307B\u304B\u306E\u554F\u984C\u306E\u7B54\u3048\u3092\u3001\u81EA\u52D5\u3067\u9078\u629E\u80A2\u3078\u6DF7\u305C\u307E\u3059\u3002\u7570\u306A\u308B\u7B54\u3048\u304C2\u7A2E\u985E\u4EE5\u4E0A\u5FC5\u8981\u3067\u3059\u3002"
+            ));
+          }
+          const actions = element2("div", "quick-qa-stage-actions");
+          actions.append(
+            button("\u554F\u984C\u30FB\u7B54\u3048\u306E\u9078\u629E\u3092\u7D9A\u3051\u308B", "secondary-button", () => {
+              quickQa.stage = "question";
+              state.message = "";
+              renderQuestionEditor(true);
+            }),
+            button(
+              quickQa.busy ? "\u4FDD\u5B58\u4E2D\u2026" : `${quickQa.pairs.length}\u554F\u3092\u307E\u3068\u3081\u3066\u4FDD\u5B58`,
+              "primary-button",
+              () => void saveQuickQaBatch(state)
+            )
+          );
+          for (const action of actions.querySelectorAll("button")) action.disabled = quickQa.busy;
+          section.append(actions);
+        }
+        const message = renderEditorMessage(state);
+        if (message) section.append(message);
+        if (quickQa.pairs.length > 0 && quickQa.stage === "question") {
+          const saved = element2("section", "quick-qa-saved");
+          saved.append(
+            element2("h2", "", `\u767B\u9332\u6E08\u307F\u306E\u554F\u984C\u30FB\u7B54\u3048\uFF08${quickQa.pairs.length}\u554F\uFF09`),
+            renderQuickQaPairList(state)
+          );
+          const review = button(`${quickQa.pairs.length}\u554F\u3092\u78BA\u8A8D\u3057\u3066\u4FDD\u5B58\u3078`, "primary-button wide-button", () => {
+            quickQa.stage = "review";
+            state.message = "";
+            renderQuestionEditor(true);
+          });
+          saved.append(review);
+          section.append(saved);
+        }
+        layout.append(section);
+        app.replaceChildren(layout);
+        app.focus({ preventScroll: true });
+        if (scrollToTop) window.scrollTo({ top: 0, behavior: "instant" });
+      }
       function renderQuestionEditor(scrollToTop = false) {
         const state = editorState;
         if (!state) return;
+        protectUnsavedEditor(true);
+        if (state.quickQa) {
+          renderQuickQaEditor(state, scrollToTop);
+          return;
+        }
         document.title = `${state.questionId ? "\u554F\u984C\u3092\u7DE8\u96C6" : "\u554F\u984C\u3092\u4F5C\u308B"} | Cloze Maker \u30B9\u30DE\u30DB\u7248`;
         const layout = element2("div", "editor-layout");
         layout.append(button("\u2190 \u554F\u984C\u96C6\u3078\u623B\u308B", "text-button", renderBook), renderEditorProgress(state));
@@ -27831,7 +28415,15 @@
   // standalone/src/pdfOcr.ts
   var PDF_RENDER_SCALE = 2;
   var MIN_SELECTION_SIZE = 8;
+  var FULL_PAGE_OCR_MAX_PIXELS = 4e6;
+  var FULL_PAGE_OCR_MAX_SIDE = 4096;
+  var PDF_TEXT_LAYER_OCR_THRESHOLD = 12;
+  var LARGE_PDF_WARNING_BYTES = 80 * 1024 * 1024;
+  var MANY_PDF_PAGES_WARNING = 120;
+  var MIN_PDF_ZOOM = 0.75;
+  var MAX_PDF_ZOOM = 4;
   var OCR_EMPTY_MESSAGE = "\u9078\u629E\u7BC4\u56F2\u304B\u3089\u6587\u5B57\u3092\u8A8D\u8B58\u3067\u304D\u307E\u305B\u3093\u3067\u3057\u305F\u3002\u7BC4\u56F2\u3092\u5909\u66F4\u3059\u308B\u304B\u3001\u624B\u5165\u529B\u3057\u3066\u304F\u3060\u3055\u3044\u3002";
+  var FULL_PDF_EMPTY_MESSAGE = "PDF\u5168\u4F53\u304B\u3089\u6587\u5B57\u3092\u8A8D\u8B58\u3067\u304D\u307E\u305B\u3093\u3067\u3057\u305F\u3002\u30DA\u30FC\u30B8\u3054\u3068\u306E\u6587\u5B57\u8D77\u3053\u3057\u3092\u8A66\u3057\u3066\u304F\u3060\u3055\u3044\u3002";
   var pdfRuntimePromise = null;
   function resolveStandaloneAssetUrl(path, baseUrl = document.baseURI) {
     return new URL(path, baseUrl).href;
@@ -27851,11 +28443,48 @@
       y: Math.min(Math.max((clientY - bounds.top) * (canvasHeight / bounds.height), 0), canvasHeight)
     };
   }
+  function clampPdfZoom(zoom) {
+    if (!Number.isFinite(zoom)) return 1;
+    return Math.min(MAX_PDF_ZOOM, Math.max(MIN_PDF_ZOOM, zoom));
+  }
+  function pdfZoomFromPinch(initialZoom, initialDistance, currentDistance) {
+    if (!Number.isFinite(initialDistance) || !Number.isFinite(currentDistance) || initialDistance <= 0 || currentDistance <= 0) {
+      return clampPdfZoom(initialZoom);
+    }
+    return clampPdfZoom(initialZoom * (currentDistance / initialDistance));
+  }
+  function pdfScrollForPinch(initialScroll, initialCenter, currentCenter, initialZoom, currentZoom) {
+    const safeInitialZoom = clampPdfZoom(initialZoom);
+    const ratio = clampPdfZoom(currentZoom) / safeInitialZoom;
+    return {
+      x: (initialScroll.x + initialCenter.x) * ratio - currentCenter.x,
+      y: (initialScroll.y + initialCenter.y) * ratio - currentCenter.y
+    };
+  }
   function combineRecognizedText(currentText, recognizedText, append) {
     const recognized = recognizedText.trim();
     if (!append || currentText.trim().length === 0) return recognized;
     return `${currentText.replace(/\s+$/u, "")}
 ${recognized}`;
+  }
+  function textFromPdfItems(items) {
+    return items.filter((item) => "str" in item).map((item) => `${item.str}${item.hasEOL ? "\n" : ""}`).join(" ").replace(/ +\n/gu, "\n").replace(/\n[ \t]+/gu, "\n").replace(/[ \t]{2,}/gu, " ").trim();
+  }
+  function calculateFullPageOcrScale(width, height) {
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return 1;
+    const scale = Math.min(
+      PDF_RENDER_SCALE,
+      Math.sqrt(FULL_PAGE_OCR_MAX_PIXELS / (width * height)),
+      FULL_PAGE_OCR_MAX_SIDE / width,
+      FULL_PAGE_OCR_MAX_SIDE / height
+    );
+    return scale < PDF_RENDER_SCALE ? scale * (1 - 1e-12) : scale;
+  }
+  function combinePdfPageTexts(pageTexts) {
+    return pageTexts.map((text) => text.trim()).filter(Boolean).join("\n\n");
+  }
+  function shouldUseImageOcr(textLayerText, forceImageOcr = false) {
+    return forceImageOcr || textLayerText.replace(/\s/gu, "").length < PDF_TEXT_LAYER_OCR_THRESHOLD;
   }
   function regionsIntersect(first, second) {
     return first.x < second.x + second.width && first.x + first.width > second.x && first.y < second.y + second.height && first.y + first.height > second.y;
@@ -27887,7 +28516,10 @@ ${recognized}`;
         }
       };
     }).filter((item) => regionsIntersect(item.region, selection));
-    return pieces.map((item) => `${item.text}${item.hasEol ? "\n" : ""}`).join(" ").replace(/ +\n/gu, "\n").trim();
+    return textFromPdfItems(pieces.map((item) => ({
+      str: item.text,
+      hasEOL: item.hasEol
+    })));
   }
   function createElement(tag, className = "", text) {
     const node = document.createElement(tag);
@@ -27900,6 +28532,15 @@ ${recognized}`;
     node.type = "button";
     node.addEventListener("click", action);
     return node;
+  }
+  function distanceBetween(first, second) {
+    return Math.hypot(second.x - first.x, second.y - first.y);
+  }
+  function centerBetween(first, second) {
+    return {
+      x: (first.x + second.x) / 2,
+      y: (first.y + second.y) / 2
+    };
   }
   function createVerticalScrollRail(scroller, label) {
     const rail = createElement("div", "selection-scroll-rail");
@@ -27932,14 +28573,19 @@ ${recognized}`;
       downButton.disabled = scroller.scrollTop >= maximum - 1;
     };
     let activePointerId = null;
+    let pointerGrabOffset = 0;
     const scrollToPointer = (clientY) => {
       const bounds = track.getBoundingClientRect();
       const maximum = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-      const ratio = Math.min(1, Math.max(0, (clientY - bounds.top) / Math.max(1, bounds.height)));
-      scroller.scrollTop = maximum * ratio;
+      const thumbHeight = thumb.getBoundingClientRect().height;
+      const travel = Math.max(0, bounds.height - thumbHeight);
+      const thumbTop = Math.min(travel, Math.max(0, clientY - bounds.top - pointerGrabOffset));
+      scroller.scrollTop = travel === 0 ? 0 : maximum * (thumbTop / travel);
     };
     track.addEventListener("pointerdown", (event) => {
       activePointerId = event.pointerId;
+      const thumbBounds = thumb.getBoundingClientRect();
+      pointerGrabOffset = event.clientY >= thumbBounds.top && event.clientY <= thumbBounds.bottom ? event.clientY - thumbBounds.top : thumbBounds.height / 2;
       track.setPointerCapture(event.pointerId);
       scrollToPointer(event.clientY);
       event.preventDefault();
@@ -27977,6 +28623,7 @@ ${recognized}`;
       __publicField(this, "element");
       __publicField(this, "questionTextarea");
       __publicField(this, "fileInput", createElement("input"));
+      __publicField(this, "chooseButton");
       __publicField(this, "viewer", createElement("div", "pdf-ocr-viewer"));
       __publicField(this, "pageCanvas", createElement("canvas", "pdf-page-canvas"));
       __publicField(this, "selectionCanvas", createElement("canvas", "pdf-selection-canvas"));
@@ -27984,22 +28631,40 @@ ${recognized}`;
       __publicField(this, "previousButton");
       __publicField(this, "nextButton");
       __publicField(this, "readButton");
+      __publicField(this, "readWholePdfButton");
       __publicField(this, "cancelButton");
       __publicField(this, "status", createElement("p", "pdf-ocr-status", "\u307E\u305A\u300C1. PDF\u3092\u9078\u3076\u300D\u3092\u62BC\u3057\u3066\u304F\u3060\u3055\u3044\u3002"));
       __publicField(this, "progress", createElement("progress", "pdf-ocr-progress"));
       __publicField(this, "language", createElement("select", "pdf-ocr-language"));
+      __publicField(this, "forceImageOcr", createElement("input"));
       __publicField(this, "resultArea", createElement("div", "pdf-ocr-result"));
       __publicField(this, "resultTextarea", createElement("textarea", "pdf-ocr-result-text"));
       __publicField(this, "resultSource", createElement("p", "pdf-ocr-result-source"));
+      __publicField(this, "startBatchButton");
       __publicField(this, "canvasStack", createElement("div", "pdf-canvas-stack"));
       __publicField(this, "updatePdfScrollRail", () => void 0);
       __publicField(this, "pdfDocument", null);
+      __publicField(this, "pdfLoadingTask", null);
+      __publicField(this, "pendingFileRead", null);
+      __publicField(this, "pdfOpenRun", null);
       __publicField(this, "currentPage", 1);
+      __publicField(this, "currentRenderScale", PDF_RENDER_SCALE);
       __publicField(this, "renderTask", null);
+      __publicField(this, "fullPageRenderTask", null);
+      __publicField(this, "pageRenderRun", 0);
+      __publicField(this, "pageRendering", false);
       __publicField(this, "selection", null);
       __publicField(this, "dragStart", null);
+      __publicField(this, "dragPointerId", null);
+      __publicField(this, "selectionBeforeGesture", null);
+      __publicField(this, "activePointers", /* @__PURE__ */ new Map());
+      __publicField(this, "pinchGesture", null);
+      __publicField(this, "suppressSelectionUntilPointersClear", false);
+      __publicField(this, "zoom", 1);
       __publicField(this, "tesseractWorker", null);
+      __publicField(this, "pendingWorker", null);
       __publicField(this, "tesseractLanguage", null);
+      __publicField(this, "ocrProgressListener", null);
       __publicField(this, "recognitionRun", 0);
       __publicField(this, "busy", false);
       __publicField(this, "disposed", false);
@@ -28010,10 +28675,10 @@ ${recognized}`;
       const headingText = createElement("div");
       headingText.append(
         createElement("h2", "", "PDF\u304B\u3089\u554F\u984C\u6587\u3092\u4F5C\u308B"),
-        createElement("p", "muted", "PDF\u3092\u9078\u3073\u3001\u6587\u5B57\u306B\u3057\u305F\u3044\u90E8\u5206\u3092\u6307\u3067\u56F2\u3080\u3060\u3051\u3067\u3059\u3002")
+        createElement("p", "muted", "PDF\u3092\u9078\u3073\u3001\u6587\u5B57\u306B\u3057\u305F\u3044\u90E8\u5206\u3092\u6307\u3067\u56F2\u307F\u307E\u3059\u3002\u4E8C\u672C\u6307\u3067\u62E1\u5927\u30FB\u7E2E\u5C0F\u3067\u304D\u307E\u3059\u3002")
       );
-      const chooseButton = createButton("1. PDF\u3092\u9078\u3076", "primary-button", () => this.fileInput.click());
-      heading.append(headingText, chooseButton);
+      this.chooseButton = createButton("1. PDF\u3092\u9078\u3076", "primary-button", () => this.fileInput.click());
+      heading.append(headingText, this.chooseButton);
       this.fileInput.type = "file";
       this.fileInput.accept = ".pdf,application/pdf";
       this.fileInput.hidden = true;
@@ -28024,12 +28689,12 @@ ${recognized}`;
         this.fileInput.value = "";
       });
       this.previousButton = createButton("\u524D\u306E\u30DA\u30FC\u30B8", "secondary-button", () => {
-        if (this.currentPage <= 1 || this.busy) return;
+        if (this.currentPage <= 1 || this.busy || this.pageRendering) return;
         this.currentPage -= 1;
         void this.renderCurrentPage();
       });
       this.nextButton = createButton("\u6B21\u306E\u30DA\u30FC\u30B8", "secondary-button", () => {
-        if (this.pdfDocument === null || this.currentPage >= this.pdfDocument.numPages || this.busy) return;
+        if (this.pdfDocument === null || this.currentPage >= this.pdfDocument.numPages || this.busy || this.pageRendering) return;
         this.currentPage += 1;
         void this.renderCurrentPage();
       });
@@ -28038,6 +28703,7 @@ ${recognized}`;
       this.pageCanvas.setAttribute("aria-hidden", "true");
       this.selectionCanvas.setAttribute("aria-label", "PDF\u306E\u6587\u5B57\u8D77\u3053\u3057\u7BC4\u56F2\u3092\u56F2\u3080");
       this.selectionCanvas.tabIndex = 0;
+      this.canvasStack.setAttribute("aria-label", "PDF\u8868\u793A\u3002\u4E8C\u672C\u6307\u3067\u62E1\u5927\u30FB\u7E2E\u5C0F\u3067\u304D\u307E\u3059");
       this.canvasStack.append(this.pageCanvas, this.selectionCanvas);
       const viewerBody = createElement("div", "pdf-viewer-body");
       const scrollRail = createVerticalScrollRail(this.canvasStack, "PDF\u3092\u4E0A\u4E0B\u306B\u79FB\u52D5");
@@ -28058,14 +28724,27 @@ ${recognized}`;
         this.language.append(option);
       }
       languageLabel.append(this.language);
+      this.forceImageOcr.type = "checkbox";
+      this.forceImageOcr.setAttribute("aria-label", "\u5168\u30DA\u30FC\u30B8\u3092\u753B\u50CF\u3068\u3057\u3066OCR");
+      const forceImageOcrLabel = createElement("label", "pdf-ocr-force-label");
+      forceImageOcrLabel.append(
+        this.forceImageOcr,
+        document.createTextNode("\u6587\u5B57\u304C\u6B20\u3051\u308BPDF\u3067\u306F\u3001\u5168\u30DA\u30FC\u30B8\u3092\u753B\u50CF\u3068\u3057\u3066OCR\u3059\u308B\uFF08\u6642\u9593\u304C\u304B\u304B\u308A\u307E\u3059\uFF09")
+      );
       this.readButton = createButton("2. \u56F2\u3093\u3060\u90E8\u5206\u3092\u6587\u5B57\u8D77\u3053\u3057", "primary-button", () => void this.recognizeSelection());
       this.readButton.disabled = true;
+      this.readWholePdfButton = createButton("PDF\u5168\u30DA\u30FC\u30B8\u3092\u4E00\u6C17\u306B\u6587\u5B57\u8D77\u3053\u3057", "secondary-button", () => void this.recognizeWholePdf());
+      this.readWholePdfButton.disabled = true;
       this.cancelButton = createButton("\u30AD\u30E3\u30F3\u30BB\u30EB", "secondary-button", () => void this.cancelRecognition());
       this.cancelButton.hidden = true;
       const languageOptions = createElement("details", "pdf-ocr-options");
-      languageOptions.append(createElement("summary", "", "\u8AAD\u307F\u53D6\u308A\u8A00\u8A9E\u3092\u5909\u66F4"), languageLabel);
+      languageOptions.append(
+        createElement("summary", "", "\u8AAD\u307F\u53D6\u308A\u65B9\u6CD5\u30FB\u8A00\u8A9E\u3092\u5909\u66F4"),
+        languageLabel,
+        forceImageOcrLabel
+      );
       const ocrActions = createElement("div", "pdf-ocr-actions");
-      ocrActions.append(this.readButton, this.cancelButton, languageOptions);
+      ocrActions.append(this.readButton, this.readWholePdfButton, this.cancelButton, languageOptions);
       this.progress.max = 1;
       this.progress.value = 0;
       this.progress.hidden = true;
@@ -28077,8 +28756,10 @@ ${recognized}`;
       resultLabel.append(this.resultTextarea);
       const replaceButton = createButton("3. \u554F\u984C\u6587\u306B\u5165\u308C\u308B", "primary-button", () => this.applyResult(false));
       const appendButton = createButton("\u7D9A\u3051\u3066\u672B\u5C3E\u306B\u8FFD\u52A0", "secondary-button", () => this.applyResult(true));
+      this.startBatchButton = createButton("\u554F\u984C\u3068\u7B54\u3048\u3092\u7D9A\u3051\u3066\u4F5C\u308B", "primary-button", () => this.applyResult(false, true));
+      this.startBatchButton.hidden = true;
       const resultActions = createElement("div", "pdf-ocr-result-actions");
-      resultActions.append(replaceButton, appendButton);
+      resultActions.append(this.startBatchButton, replaceButton, appendButton);
       this.resultArea.hidden = true;
       this.resultArea.append(this.resultSource, resultLabel, resultActions);
       this.element.append(
@@ -28096,37 +28777,97 @@ ${recognized}`;
       if (this.disposed) return;
       this.disposed = true;
       document.documentElement.classList.remove("selection-gesture-active");
+      this.canvasStack.classList.remove("is-pinching");
+      this.activePointers.clear();
+      this.pinchGesture = null;
       this.recognitionRun += 1;
+      this.pageRenderRun += 1;
       this.renderTask?.cancel();
       this.renderTask = null;
+      this.fullPageRenderTask?.cancel();
+      this.fullPageRenderTask = null;
+      const loadingTask = this.pdfLoadingTask;
+      this.pdfLoadingTask = null;
+      const pendingFileRead = this.pendingFileRead;
+      this.pendingFileRead = null;
+      this.pdfOpenRun = null;
+      this.ocrProgressListener = null;
       const worker = this.tesseractWorker;
       this.tesseractWorker = null;
       this.tesseractLanguage = null;
-      if (worker !== null) await worker.terminate().catch(() => void 0);
+      const pendingWorker = this.pendingWorker;
+      await Promise.all([
+        loadingTask?.destroy().catch(() => void 0),
+        pendingFileRead?.catch(() => void 0),
+        pendingWorker?.catch(() => void 0),
+        worker?.terminate().catch(() => void 0)
+      ]);
       await this.pdfDocument?.destroy().catch(() => void 0);
       this.pdfDocument = null;
     }
     installSelectionEvents() {
       const begin = (event) => {
         if (this.pdfDocument === null || this.busy || event.button !== 0) return;
+        this.activePointers.set(event.pointerId, {
+          x: event.clientX,
+          y: event.clientY,
+          pointerType: event.pointerType
+        });
+        this.selectionCanvas.setPointerCapture(event.pointerId);
+        const touchPointers = this.touchPointers();
+        if (touchPointers.length >= 2) {
+          this.beginPinch(touchPointers[0], touchPointers[1]);
+          event.preventDefault();
+          return;
+        }
+        if (this.suppressSelectionUntilPointersClear) {
+          event.preventDefault();
+          return;
+        }
         const point = this.pointerPoint(event);
+        this.selectionBeforeGesture = this.selection === null ? null : { ...this.selection };
         this.dragStart = point;
+        this.dragPointerId = event.pointerId;
         this.selection = { x: point.x, y: point.y, width: 0, height: 0 };
         document.documentElement.classList.add("selection-gesture-active");
-        this.selectionCanvas.setPointerCapture(event.pointerId);
         event.preventDefault();
         this.drawSelection();
       };
       const move = (event) => {
-        if (this.dragStart === null || !this.selectionCanvas.hasPointerCapture(event.pointerId)) return;
+        const pointer = this.activePointers.get(event.pointerId);
+        if (pointer !== void 0) {
+          pointer.x = event.clientX;
+          pointer.y = event.clientY;
+        }
+        if (this.pinchGesture !== null) {
+          this.updatePinch();
+          event.preventDefault();
+          return;
+        }
+        if (this.dragStart === null || this.dragPointerId !== event.pointerId || !this.selectionCanvas.hasPointerCapture(event.pointerId)) return;
         this.selection = selectionFromPoints(this.dragStart, this.pointerPoint(event));
         event.preventDefault();
         this.drawSelection();
       };
       const finish = (event) => {
-        if (this.dragStart === null) return;
+        const pointer = this.activePointers.get(event.pointerId);
+        if (pointer !== void 0) {
+          pointer.x = event.clientX;
+          pointer.y = event.clientY;
+        }
+        if (this.pinchGesture !== null || this.suppressSelectionUntilPointersClear) {
+          if (this.pinchGesture !== null) this.updatePinch();
+          this.activePointers.delete(event.pointerId);
+          this.endPinchIfNeeded();
+          event.preventDefault();
+          return;
+        }
+        this.activePointers.delete(event.pointerId);
+        if (this.dragStart === null || this.dragPointerId !== event.pointerId) return;
         this.selection = selectionFromPoints(this.dragStart, this.pointerPoint(event));
         this.dragStart = null;
+        this.dragPointerId = null;
+        this.selectionBeforeGesture = null;
         document.documentElement.classList.remove("selection-gesture-active");
         if (this.selection.width < MIN_SELECTION_SIZE || this.selection.height < MIN_SELECTION_SIZE) {
           this.selection = null;
@@ -28141,17 +28882,105 @@ ${recognized}`;
       this.selectionCanvas.addEventListener("pointerdown", begin);
       this.selectionCanvas.addEventListener("pointermove", move);
       this.selectionCanvas.addEventListener("pointerup", finish);
-      const cancel = () => {
-        document.documentElement.classList.remove("selection-gesture-active");
-        this.dragStart = null;
-        this.selection = null;
-        this.drawSelection();
-        this.updateControls();
+      const cancel = (event) => {
+        if (!this.activePointers.has(event.pointerId)) return;
+        this.activePointers.delete(event.pointerId);
+        if (this.pinchGesture !== null || this.suppressSelectionUntilPointersClear) {
+          this.endPinchIfNeeded();
+        } else if (this.dragPointerId === event.pointerId) {
+          document.documentElement.classList.remove("selection-gesture-active");
+          this.dragStart = null;
+          this.dragPointerId = null;
+          this.selection = this.selectionBeforeGesture;
+          this.selectionBeforeGesture = null;
+          this.drawSelection();
+          this.updateControls();
+        }
       };
       this.selectionCanvas.addEventListener("pointercancel", cancel);
-      this.selectionCanvas.addEventListener("lostpointercapture", () => {
-        if (this.dragStart !== null) cancel();
-      });
+      this.selectionCanvas.addEventListener("lostpointercapture", cancel);
+    }
+    touchPointers() {
+      return [...this.activePointers.entries()].filter(([, pointer]) => pointer.pointerType === "touch");
+    }
+    beginPinch(firstEntry, secondEntry) {
+      const [firstId, first] = firstEntry;
+      const [secondId, second] = secondEntry;
+      const bounds = this.canvasStack.getBoundingClientRect();
+      const center = centerBetween(first, second);
+      this.selection = this.selectionBeforeGesture;
+      this.dragStart = null;
+      this.dragPointerId = null;
+      this.suppressSelectionUntilPointersClear = true;
+      this.pinchGesture = {
+        pointerIds: [firstId, secondId],
+        initialDistance: distanceBetween(first, second),
+        initialCenter: {
+          x: center.x - bounds.left,
+          y: center.y - bounds.top
+        },
+        initialScroll: {
+          x: this.canvasStack.scrollLeft,
+          y: this.canvasStack.scrollTop
+        },
+        initialZoom: this.zoom
+      };
+      document.documentElement.classList.add("selection-gesture-active");
+      this.canvasStack.classList.add("is-pinching");
+      this.setStatus("\u4E8C\u672C\u6307\u3067PDF\u3092\u62E1\u5927\u30FB\u7E2E\u5C0F\u3057\u3066\u3044\u307E\u3059\u3002");
+      this.drawSelection();
+      this.updateControls();
+    }
+    updatePinch() {
+      const gesture = this.pinchGesture;
+      if (gesture === null) return;
+      const first = this.activePointers.get(gesture.pointerIds[0]);
+      const second = this.activePointers.get(gesture.pointerIds[1]);
+      if (first === void 0 || second === void 0) return;
+      const bounds = this.canvasStack.getBoundingClientRect();
+      const center = centerBetween(first, second);
+      const currentCenter = {
+        x: center.x - bounds.left,
+        y: center.y - bounds.top
+      };
+      const nextZoom = pdfZoomFromPinch(
+        gesture.initialZoom,
+        gesture.initialDistance,
+        distanceBetween(first, second)
+      );
+      const nextScroll = pdfScrollForPinch(
+        gesture.initialScroll,
+        gesture.initialCenter,
+        currentCenter,
+        gesture.initialZoom,
+        nextZoom
+      );
+      this.applyZoom(nextZoom);
+      this.canvasStack.scrollLeft = nextScroll.x;
+      this.canvasStack.scrollTop = nextScroll.y;
+      this.updatePdfScrollRail();
+    }
+    endPinchIfNeeded() {
+      const gesture = this.pinchGesture;
+      if (gesture !== null && this.activePointers.has(gesture.pointerIds[0]) && this.activePointers.has(gesture.pointerIds[1])) return;
+      this.pinchGesture = null;
+      this.canvasStack.classList.remove("is-pinching");
+      if (this.activePointers.size === 0) {
+        this.suppressSelectionUntilPointersClear = false;
+        this.selectionBeforeGesture = null;
+        document.documentElement.classList.remove("selection-gesture-active");
+        this.setStatus(`\u8868\u793A\u3092${Math.round(this.zoom * 100)}%\u306B\u3057\u307E\u3057\u305F\u3002\u6587\u5B57\u306B\u3057\u305F\u3044\u90E8\u5206\u3092\u6307\u3067\u56F2\u3093\u3067\u304F\u3060\u3055\u3044\u3002`);
+      }
+      this.drawSelection();
+      this.updateControls();
+    }
+    applyZoom(zoom) {
+      this.zoom = clampPdfZoom(zoom);
+      const width = `${this.zoom * 100}%`;
+      this.pageCanvas.style.width = width;
+      this.selectionCanvas.style.width = width;
+      this.canvasStack.style.overflowX = this.zoom > 1 ? "auto" : "hidden";
+      requestAnimationFrame(this.updatePdfScrollRail);
     }
     pointerPoint(event) {
       const bounds = this.selectionCanvas.getBoundingClientRect();
@@ -28164,23 +28993,61 @@ ${recognized}`;
       );
     }
     async openPdf(file) {
-      if (this.busy) return;
+      if (this.busy || this.disposed) return;
+      if (file.size > LARGE_PDF_WARNING_BYTES && !window.confirm(
+        `\u3053\u306EPDF\u306F\u7D04${Math.ceil(file.size / (1024 * 1024))}MB\u3042\u308A\u307E\u3059\u3002\u30B9\u30DE\u30DB\u3067\u306F\u8AAD\u307F\u8FBC\u307F\u306B\u6642\u9593\u304C\u304B\u304B\u308B\u5834\u5408\u304C\u3042\u308A\u307E\u3059\u3002\u7D9A\u3051\u307E\u3059\u304B\uFF1F`
+      )) {
+        this.setStatus("PDF\u306E\u8AAD\u307F\u8FBC\u307F\u3092\u4E2D\u6B62\u3057\u307E\u3057\u305F\u3002");
+        return;
+      }
+      const run = ++this.recognitionRun;
+      this.pdfOpenRun = run;
       this.setBusy(true);
       this.setStatus(`\u300C${file.name}\u300D\u3092\u958B\u3044\u3066\u3044\u307E\u3059\u2026`);
       this.resultArea.hidden = true;
+      this.startBatchButton.hidden = true;
       try {
         this.renderTask?.cancel();
-        await this.pdfDocument?.destroy().catch(() => void 0);
+        const previousDocument = this.pdfDocument;
+        this.pdfDocument = null;
+        await previousDocument?.destroy().catch(() => void 0);
+        if (run !== this.recognitionRun || this.disposed) return;
         const runtime = await loadPdfRuntime();
-        const data = new Uint8Array(await file.arrayBuffer());
-        this.pdfDocument = await runtime.getDocument({ data }).promise;
+        if (run !== this.recognitionRun || this.disposed) return;
+        const fileRead = file.arrayBuffer();
+        this.pendingFileRead = fileRead;
+        const buffer = await fileRead;
+        if (this.pendingFileRead === fileRead) this.pendingFileRead = null;
+        if (run !== this.recognitionRun || this.disposed) return;
+        const loadingTask = runtime.getDocument({ data: new Uint8Array(buffer) });
+        this.pdfLoadingTask = loadingTask;
+        const loadedDocument = await loadingTask.promise;
+        if (this.pdfLoadingTask === loadingTask) this.pdfLoadingTask = null;
+        if (run !== this.recognitionRun || this.disposed) {
+          await loadedDocument.destroy().catch(() => void 0);
+          return;
+        }
+        if (loadedDocument.numPages > MANY_PDF_PAGES_WARNING && !window.confirm(
+          `\u3053\u306EPDF\u306F${loadedDocument.numPages}\u30DA\u30FC\u30B8\u3042\u308A\u307E\u3059\u3002\u5168\u30DA\u30FC\u30B8\u6587\u5B57\u8D77\u3053\u3057\u306B\u306F\u9577\u3044\u6642\u9593\u304C\u304B\u304B\u308B\u5834\u5408\u304C\u3042\u308A\u307E\u3059\u3002\u8AAD\u307F\u8FBC\u307F\u3092\u7D9A\u3051\u307E\u3059\u304B\uFF1F`
+        )) {
+          await loadedDocument.destroy().catch(() => void 0);
+          this.setStatus("PDF\u306E\u8AAD\u307F\u8FBC\u307F\u3092\u4E2D\u6B62\u3057\u307E\u3057\u305F\u3002");
+          return;
+        }
+        this.pdfDocument = loadedDocument;
         this.currentPage = 1;
+        this.zoom = 1;
+        this.applyZoom(this.zoom);
         this.viewer.hidden = false;
         await this.renderCurrentPage();
+        if (run !== this.recognitionRun || this.disposed) return;
         this.setStatus("\u6587\u5B57\u8D77\u3053\u3057\u3057\u305F\u3044\u90E8\u5206\u3092\u3001\u6307\u3067\u56DB\u89D2\u304F\u56F2\u3093\u3067\u304F\u3060\u3055\u3044\u3002");
       } catch (error) {
+        if (run !== this.recognitionRun || this.disposed) return;
         console.error("PDF\u306E\u8AAD\u307F\u8FBC\u307F\u306B\u5931\u6557\u3057\u307E\u3057\u305F\u3002", error);
+        const failedDocument = this.pdfDocument;
         this.pdfDocument = null;
+        await failedDocument?.destroy().catch(() => void 0);
         this.viewer.hidden = true;
         const name = error instanceof Error ? error.name : "";
         this.setStatus(
@@ -28188,38 +29055,58 @@ ${recognized}`;
           true
         );
       } finally {
-        this.setBusy(false);
-        this.updateControls();
+        if (this.pdfOpenRun === run) {
+          this.pdfOpenRun = null;
+          this.pdfLoadingTask = null;
+          this.pendingFileRead = null;
+        }
+        if (run === this.recognitionRun && !this.disposed) {
+          this.setBusy(false);
+          this.updateControls();
+        }
       }
     }
     async renderCurrentPage() {
       if (this.pdfDocument === null || this.disposed) return;
+      const pdfDocument = this.pdfDocument;
+      const requestedPage = this.currentPage;
+      const run = ++this.pageRenderRun;
+      this.pageRendering = true;
       this.renderTask?.cancel();
       this.selection = null;
       this.resultArea.hidden = true;
       this.drawSelection();
       this.updateControls();
-      const page = await this.pdfDocument.getPage(this.currentPage);
-      const viewport = page.getViewport({ scale: PDF_RENDER_SCALE });
-      this.pageCanvas.width = Math.ceil(viewport.width);
-      this.pageCanvas.height = Math.ceil(viewport.height);
-      this.selectionCanvas.width = this.pageCanvas.width;
-      this.selectionCanvas.height = this.pageCanvas.height;
-      const context = this.pageCanvas.getContext("2d", { alpha: false });
-      if (context === null) throw new Error("PDF\u63CF\u753B\u7528canvas\u3092\u4F5C\u6210\u3067\u304D\u307E\u305B\u3093\u3002");
-      this.pageStatus.textContent = `${this.currentPage} / ${this.pdfDocument.numPages}\u30DA\u30FC\u30B8`;
-      const task = page.render({ canvas: this.pageCanvas, canvasContext: context, viewport });
-      this.renderTask = task;
       try {
+        const page = await pdfDocument.getPage(requestedPage);
+        if (run !== this.pageRenderRun || pdfDocument !== this.pdfDocument || requestedPage !== this.currentPage || this.disposed) return;
+        const baseViewport = page.getViewport({ scale: 1 });
+        this.currentRenderScale = calculateFullPageOcrScale(baseViewport.width, baseViewport.height);
+        const viewport = page.getViewport({ scale: this.currentRenderScale });
+        this.pageCanvas.width = Math.max(1, Math.ceil(viewport.width));
+        this.pageCanvas.height = Math.max(1, Math.ceil(viewport.height));
+        this.selectionCanvas.width = this.pageCanvas.width;
+        this.selectionCanvas.height = this.pageCanvas.height;
+        const context = this.pageCanvas.getContext("2d", { alpha: false });
+        if (context === null) throw new Error("PDF\u63CF\u753B\u7528canvas\u3092\u4F5C\u6210\u3067\u304D\u307E\u305B\u3093\u3002");
+        this.pageStatus.textContent = `${requestedPage} / ${pdfDocument.numPages}\u30DA\u30FC\u30B8`;
+        const task = page.render({ canvas: this.pageCanvas, canvasContext: context, viewport });
+        this.renderTask = task;
         await task.promise;
+        if (run !== this.pageRenderRun || pdfDocument !== this.pdfDocument || requestedPage !== this.currentPage || this.disposed) return;
+        this.canvasStack.scrollTop = 0;
+        this.canvasStack.scrollLeft = 0;
+        requestAnimationFrame(this.updatePdfScrollRail);
+        this.setStatus("\u6587\u5B57\u8D77\u3053\u3057\u3057\u305F\u3044\u90E8\u5206\u3092\u3001\u6307\u3067\u56DB\u89D2\u304F\u56F2\u3093\u3067\u304F\u3060\u3055\u3044\u3002");
       } catch (error) {
-        if (!(error instanceof Error && error.name === "RenderingCancelledException")) throw error;
+        if (run === this.pageRenderRun && !(error instanceof Error && error.name === "RenderingCancelledException")) throw error;
       } finally {
-        if (this.renderTask === task) this.renderTask = null;
+        if (run === this.pageRenderRun) {
+          this.renderTask = null;
+          this.pageRendering = false;
+          this.updateControls();
+        }
       }
-      this.canvasStack.scrollTop = 0;
-      requestAnimationFrame(this.updatePdfScrollRail);
-      this.setStatus("\u6587\u5B57\u8D77\u3053\u3057\u3057\u305F\u3044\u90E8\u5206\u3092\u3001\u6307\u3067\u56DB\u89D2\u304F\u56F2\u3093\u3067\u304F\u3060\u3055\u3044\u3002");
     }
     drawSelection() {
       const context = this.selectionCanvas.getContext("2d");
@@ -28239,19 +29126,31 @@ ${recognized}`;
       this.progress.value = 0;
       this.progress.hidden = false;
       this.resultArea.hidden = true;
+      this.startBatchButton.hidden = true;
       this.setStatus("PDF\u5185\u306E\u6587\u5B57\u60C5\u5831\u3092\u78BA\u8A8D\u3057\u3066\u3044\u307E\u3059\u2026");
       try {
         const runtime = await loadPdfRuntime();
         const sourceSelection = {
-          x: this.selection.x / PDF_RENDER_SCALE,
-          y: this.selection.y / PDF_RENDER_SCALE,
-          width: this.selection.width / PDF_RENDER_SCALE,
-          height: this.selection.height / PDF_RENDER_SCALE
+          x: this.selection.x / this.currentRenderScale,
+          y: this.selection.y / this.currentRenderScale,
+          width: this.selection.width / this.currentRenderScale,
+          height: this.selection.height / this.currentRenderScale
         };
-        let text = await extractTextInSelection(runtime, this.pdfDocument, this.currentPage, sourceSelection);
+        let text = removeSpacesBetweenJapaneseCharacters(
+          await extractTextInSelection(runtime, this.pdfDocument, this.currentPage, sourceSelection)
+        );
         let sourceLabel = "PDF\u5185\u306E\u6587\u5B57\u60C5\u5831\u3092\u53D6\u5F97\u3057\u307E\u3057\u305F\u3002";
         if (text.trim().length === 0) {
           this.setStatus("\u753B\u50CFPDF\u306E\u305F\u3081\u3001\u65E5\u672C\u8A9E\u30FB\u82F1\u8A9EOCR\u3092\u5B9F\u884C\u3057\u3066\u3044\u307E\u3059\u2026");
+          this.ocrProgressListener = (status, progress) => {
+            if (run !== this.recognitionRun) return;
+            if (Number.isFinite(progress)) this.progress.value = progress;
+            if (status === "loading language traineddata") {
+              this.setStatus("\u65E5\u672C\u8A9E\u30FB\u82F1\u8A9E\u306EOCR\u30C7\u30FC\u30BF\u3092\u8AAD\u307F\u8FBC\u3093\u3067\u3044\u307E\u3059\u2026\uFF08\u521D\u56DE\u306E\u307F\u6642\u9593\u304C\u304B\u304B\u308A\u307E\u3059\uFF09");
+            } else if (status === "recognizing text") {
+              this.setStatus(`\u6587\u5B57\u3092\u8A8D\u8B58\u3057\u3066\u3044\u307E\u3059\u2026 ${Math.round(progress * 100)}%`);
+            }
+          };
           const worker = await this.getTesseractWorker(this.language.value, run);
           if (run !== this.recognitionRun) return;
           const crop = this.cropSelection();
@@ -28274,6 +29173,123 @@ ${recognized}`;
         this.setStatus(message, true);
       } finally {
         if (run === this.recognitionRun) {
+          this.ocrProgressListener = null;
+          this.setBusy(false);
+          this.progress.hidden = true;
+        }
+      }
+    }
+    async recognizeWholePdf() {
+      if (this.pdfDocument === null || this.busy) return;
+      const pdfDocument = this.pdfDocument;
+      const run = ++this.recognitionRun;
+      const pageTexts = [];
+      const failedPages = [];
+      this.setBusy(true);
+      this.progress.value = 0;
+      this.progress.hidden = false;
+      this.resultArea.hidden = true;
+      this.startBatchButton.hidden = true;
+      try {
+        for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
+          if (run !== this.recognitionRun) return;
+          let page = null;
+          let temporaryCanvas = null;
+          let pageIncomplete = false;
+          try {
+            this.setStatus(`\u5168${pdfDocument.numPages}\u30DA\u30FC\u30B8\u4E2D ${pageNumber}\u30DA\u30FC\u30B8\u76EE\u306E\u6587\u5B57\u3092\u78BA\u8A8D\u3057\u3066\u3044\u307E\u3059\u2026`);
+            page = await pdfDocument.getPage(pageNumber);
+            if (run !== this.recognitionRun) return;
+            const content = await page.getTextContent();
+            if (run !== this.recognitionRun) return;
+            const textLayerText = removeSpacesBetweenJapaneseCharacters(textFromPdfItems(content.items));
+            let text2 = textLayerText;
+            const useImageOcr = shouldUseImageOcr(textLayerText, this.forceImageOcr.checked);
+            if (useImageOcr) {
+              this.setStatus(
+                this.forceImageOcr.checked ? `\u5168${pdfDocument.numPages}\u30DA\u30FC\u30B8\u4E2D ${pageNumber}\u30DA\u30FC\u30B8\u76EE\u3092\u753B\u50CF\u3068\u3057\u3066OCR\u3057\u3066\u3044\u307E\u3059\u2026` : `\u5168${pdfDocument.numPages}\u30DA\u30FC\u30B8\u4E2D ${pageNumber}\u30DA\u30FC\u30B8\u76EE\u306F\u6587\u5B57\u60C5\u5831\u304C\u5C11\u306A\u3044\u305F\u3081OCR\u3057\u3066\u3044\u307E\u3059\u2026`
+              );
+              const baseViewport = page.getViewport({ scale: 1 });
+              const scale = calculateFullPageOcrScale(baseViewport.width, baseViewport.height);
+              const viewport = page.getViewport({ scale });
+              temporaryCanvas = document.createElement("canvas");
+              temporaryCanvas.width = Math.max(1, Math.ceil(viewport.width));
+              temporaryCanvas.height = Math.max(1, Math.ceil(viewport.height));
+              const context = temporaryCanvas.getContext("2d", { alpha: false });
+              if (context === null) throw new Error("PDF\u63CF\u753B\u7528canvas\u3092\u4F5C\u6210\u3067\u304D\u307E\u305B\u3093\u3002");
+              context.fillStyle = "#fff";
+              context.fillRect(0, 0, temporaryCanvas.width, temporaryCanvas.height);
+              const task = page.render({ canvas: temporaryCanvas, canvasContext: context, viewport });
+              this.fullPageRenderTask = task;
+              try {
+                await task.promise;
+              } finally {
+                if (this.fullPageRenderTask === task) this.fullPageRenderTask = null;
+              }
+              if (run !== this.recognitionRun) return;
+              this.ocrProgressListener = (status, pageProgress) => {
+                if (run !== this.recognitionRun) return;
+                const normalized = Number.isFinite(pageProgress) ? pageProgress : 0;
+                this.progress.value = (pageNumber - 1 + normalized) / pdfDocument.numPages;
+                if (status === "loading language traineddata") {
+                  this.setStatus("\u65E5\u672C\u8A9E\u30FB\u82F1\u8A9E\u306EOCR\u30C7\u30FC\u30BF\u3092\u8AAD\u307F\u8FBC\u3093\u3067\u3044\u307E\u3059\u2026\uFF08\u521D\u56DE\u306E\u307F\u6642\u9593\u304C\u304B\u304B\u308A\u307E\u3059\uFF09");
+                } else if (status === "recognizing text") {
+                  this.setStatus(
+                    `\u5168${pdfDocument.numPages}\u30DA\u30FC\u30B8\u4E2D ${pageNumber}\u30DA\u30FC\u30B8\u76EE\u3092\u8A8D\u8B58\u3057\u3066\u3044\u307E\u3059\u2026 ${Math.round(normalized * 100)}%`
+                  );
+                }
+              };
+              try {
+                const worker = await this.getTesseractWorker(this.language.value, run);
+                if (run !== this.recognitionRun) return;
+                const recognition = await worker.recognize(temporaryCanvas, void 0, { text: true });
+                const recognizedText = removeSpacesBetweenJapaneseCharacters(recognition.data.text.trim());
+                if (recognizedText.length > 0) text2 = recognizedText;
+                else pageIncomplete = true;
+              } catch (error) {
+                if (run !== this.recognitionRun) return;
+                console.error(`PDF\u306E${pageNumber}\u30DA\u30FC\u30B8\u76EE\u3092\u753B\u50CFOCR\u3067\u304D\u307E\u305B\u3093\u3067\u3057\u305F\u3002`, error);
+                pageIncomplete = true;
+                text2 = textLayerText;
+              }
+            }
+            if (text2.trim().length === 0) pageIncomplete = true;
+            pageTexts.push(text2);
+            if (pageIncomplete) failedPages.push(pageNumber);
+          } catch (error) {
+            if (run !== this.recognitionRun) return;
+            if (error instanceof Error && error.name === "RenderingCancelledException") return;
+            console.error(`PDF\u306E${pageNumber}\u30DA\u30FC\u30B8\u76EE\u3092\u6587\u5B57\u8D77\u3053\u3057\u3067\u304D\u307E\u305B\u3093\u3067\u3057\u305F\u3002`, error);
+            pageTexts.push("");
+            if (!failedPages.includes(pageNumber)) failedPages.push(pageNumber);
+          } finally {
+            this.ocrProgressListener = null;
+            if (temporaryCanvas !== null) {
+              temporaryCanvas.width = 1;
+              temporaryCanvas.height = 1;
+            }
+            page?.cleanup();
+          }
+          this.progress.value = pageNumber / pdfDocument.numPages;
+        }
+        if (run !== this.recognitionRun) return;
+        const text = combinePdfPageTexts(pageTexts);
+        if (text.length === 0) throw new Error(FULL_PDF_EMPTY_MESSAGE);
+        this.resultTextarea.value = text;
+        this.resultTextarea.rows = 10;
+        this.resultSource.textContent = failedPages.length === 0 ? `PDF\u5168${pdfDocument.numPages}\u30DA\u30FC\u30B8\u3092\u6587\u5B57\u8D77\u3053\u3057\u3057\u307E\u3057\u305F\u3002` : `PDF\u5168${pdfDocument.numPages}\u30DA\u30FC\u30B8\u3092\u51E6\u7406\u3057\u307E\u3057\u305F\u3002\u6587\u5B57\u3092\u78BA\u8A8D\u3067\u304D\u306A\u304B\u3063\u305F\u30DA\u30FC\u30B8: ${failedPages.join("\u3001")}\u30DA\u30FC\u30B8`;
+        this.resultArea.hidden = false;
+        this.startBatchButton.hidden = false;
+        this.setStatus("PDF\u5168\u4F53\u306E\u6587\u5B57\u8D77\u3053\u3057\u304C\u5B8C\u4E86\u3057\u307E\u3057\u305F\u3002\u7D9A\u3051\u3066\u554F\u984C\u3068\u7B54\u3048\u3092\u307E\u3068\u3081\u3066\u4F5C\u308C\u307E\u3059\u3002");
+        this.resultTextarea.focus({ preventScroll: true });
+      } catch (error) {
+        if (run !== this.recognitionRun) return;
+        const message = error instanceof Error && error.message === FULL_PDF_EMPTY_MESSAGE ? FULL_PDF_EMPTY_MESSAGE : "PDF\u5168\u4F53\u306E\u6587\u5B57\u8D77\u3053\u3057\u306B\u5931\u6557\u3057\u307E\u3057\u305F\u3002\u30DA\u30FC\u30B8\u3054\u3068\u306E\u6587\u5B57\u8D77\u3053\u3057\u3092\u8A66\u3057\u3066\u304F\u3060\u3055\u3044\u3002";
+        this.setStatus(message, true);
+      } finally {
+        if (run === this.recognitionRun) {
+          this.fullPageRenderTask = null;
+          this.ocrProgressListener = null;
           this.setBusy(false);
           this.progress.hidden = true;
         }
@@ -28307,28 +29323,33 @@ ${recognized}`;
       this.tesseractWorker = null;
       this.tesseractLanguage = null;
       if (previous !== null) await previous.terminate();
+      if (run !== this.recognitionRun || this.disposed) throw new Error("OCR\u3092\u30AD\u30E3\u30F3\u30BB\u30EB\u3057\u307E\u3057\u305F\u3002");
       const { createWorker, OEM } = await Promise.resolve().then(() => __toESM(require_src()));
-      if (run !== this.recognitionRun) throw new Error("OCR\u3092\u30AD\u30E3\u30F3\u30BB\u30EB\u3057\u307E\u3057\u305F\u3002");
-      const worker = await createWorker(language, OEM.LSTM_ONLY, {
-        workerPath: resolveStandaloneAssetUrl("./ocr/worker.min.js"),
-        corePath: resolveStandaloneAssetUrl("./ocr/tesseract-core-lstm.wasm.js"),
-        langPath: resolveStandaloneAssetUrl("./tessdata"),
-        gzip: true,
-        cacheMethod: "none",
-        workerBlobURL: true,
-        logger: (message) => {
-          if (run !== this.recognitionRun) return;
-          if (Number.isFinite(message.progress)) this.progress.value = message.progress;
-          if (message.status === "loading language traineddata") {
-            this.setStatus("\u65E5\u672C\u8A9E\u30FB\u82F1\u8A9E\u306EOCR\u30C7\u30FC\u30BF\u3092\u8AAD\u307F\u8FBC\u3093\u3067\u3044\u307E\u3059\u2026\uFF08\u521D\u56DE\u306E\u307F\u6642\u9593\u304C\u304B\u304B\u308A\u307E\u3059\uFF09");
-          } else if (message.status === "recognizing text") {
-            this.setStatus(`\u6587\u5B57\u3092\u8A8D\u8B58\u3057\u3066\u3044\u307E\u3059\u2026 ${Math.round(message.progress * 100)}%`);
+      if (run !== this.recognitionRun || this.disposed) throw new Error("OCR\u3092\u30AD\u30E3\u30F3\u30BB\u30EB\u3057\u307E\u3057\u305F\u3002");
+      const pendingWorker = (async () => {
+        const worker2 = await createWorker(language, OEM.LSTM_ONLY, {
+          workerPath: resolveStandaloneAssetUrl("./ocr/worker.min.js"),
+          corePath: resolveStandaloneAssetUrl("./ocr/tesseract-core-lstm.wasm.js"),
+          langPath: resolveStandaloneAssetUrl("./tessdata"),
+          gzip: true,
+          cacheMethod: "none",
+          workerBlobURL: true,
+          logger: (message) => {
+            this.ocrProgressListener?.(message.status, message.progress);
           }
+        });
+        if (run !== this.recognitionRun || this.disposed) {
+          await worker2.terminate().catch(() => void 0);
+          throw new Error("OCR\u3092\u30AD\u30E3\u30F3\u30BB\u30EB\u3057\u307E\u3057\u305F\u3002");
         }
-      });
-      if (run !== this.recognitionRun) {
-        await worker.terminate();
-        throw new Error("OCR\u3092\u30AD\u30E3\u30F3\u30BB\u30EB\u3057\u307E\u3057\u305F\u3002");
+        return worker2;
+      })();
+      this.pendingWorker = pendingWorker;
+      let worker;
+      try {
+        worker = await pendingWorker;
+      } finally {
+        if (this.pendingWorker === pendingWorker) this.pendingWorker = null;
       }
       this.tesseractWorker = worker;
       this.tesseractLanguage = language;
@@ -28336,16 +29357,43 @@ ${recognized}`;
     }
     async cancelRecognition() {
       if (!this.busy) return;
-      this.recognitionRun += 1;
+      const run = ++this.recognitionRun;
+      const wasOpeningPdf = this.pdfOpenRun !== null;
+      this.pdfOpenRun = null;
+      this.setStatus("\u51E6\u7406\u3092\u30AD\u30E3\u30F3\u30BB\u30EB\u3057\u3066\u3044\u307E\u3059\u2026");
+      this.pageRenderRun += 1;
+      this.renderTask?.cancel();
+      this.renderTask = null;
+      this.fullPageRenderTask?.cancel();
+      this.fullPageRenderTask = null;
+      const loadingTask = this.pdfLoadingTask;
+      this.pdfLoadingTask = null;
+      const pendingFileRead = this.pendingFileRead;
+      this.pendingFileRead = null;
+      this.ocrProgressListener = null;
       const worker = this.tesseractWorker;
       this.tesseractWorker = null;
       this.tesseractLanguage = null;
-      if (worker !== null) await worker.terminate().catch(() => void 0);
+      const pendingWorker = this.pendingWorker;
+      if (wasOpeningPdf) {
+        const documentToClose = this.pdfDocument;
+        this.pdfDocument = null;
+        this.viewer.hidden = true;
+        await documentToClose?.destroy().catch(() => void 0);
+      }
+      await Promise.all([
+        loadingTask?.destroy().catch(() => void 0),
+        pendingFileRead?.catch(() => void 0),
+        pendingWorker?.catch(() => void 0),
+        worker?.terminate().catch(() => void 0)
+      ]);
+      if (run !== this.recognitionRun || this.disposed) return;
+      this.pageRendering = false;
       this.setBusy(false);
       this.progress.hidden = true;
-      this.setStatus("\u6587\u5B57\u8D77\u3053\u3057\u3092\u30AD\u30E3\u30F3\u30BB\u30EB\u3057\u307E\u3057\u305F\u3002");
+      this.setStatus(wasOpeningPdf ? "PDF\u306E\u8AAD\u307F\u8FBC\u307F\u3092\u30AD\u30E3\u30F3\u30BB\u30EB\u3057\u307E\u3057\u305F\u3002" : "\u6587\u5B57\u8D77\u3053\u3057\u3092\u30AD\u30E3\u30F3\u30BB\u30EB\u3057\u307E\u3057\u305F\u3002");
     }
-    applyResult(append) {
+    applyResult(append, startBatch = false) {
       const nextText = combineRecognizedText(
         this.questionTextarea.value,
         this.resultTextarea.value,
@@ -28353,6 +29401,10 @@ ${recognized}`;
       );
       this.questionTextarea.value = nextText;
       this.questionTextarea.dispatchEvent(new Event("input", { bubbles: true }));
+      if (startBatch) {
+        this.questionTextarea.dispatchEvent(new CustomEvent("cloze:start-quick-qa", { bubbles: true }));
+        return;
+      }
       this.setStatus(append ? "\u6587\u5B57\u8D77\u3053\u3057\u7D50\u679C\u3092\u554F\u984C\u6587\u306E\u672B\u5C3E\u306B\u8FFD\u52A0\u3057\u307E\u3057\u305F\u3002" : "\u6587\u5B57\u8D77\u3053\u3057\u7D50\u679C\u3092\u554F\u984C\u6587\u306B\u53CD\u6620\u3057\u307E\u3057\u305F\u3002");
       this.questionTextarea.focus({ preventScroll: true });
     }
@@ -28367,10 +29419,13 @@ ${recognized}`;
     }
     updateControls() {
       const pageCount = this.pdfDocument?.numPages ?? 0;
-      this.previousButton.disabled = this.busy || this.currentPage <= 1;
-      this.nextButton.disabled = this.busy || pageCount === 0 || this.currentPage >= pageCount;
-      this.readButton.disabled = this.busy || this.pdfDocument === null || this.selection === null;
+      this.chooseButton.disabled = this.busy;
+      this.previousButton.disabled = this.busy || this.pageRendering || this.currentPage <= 1;
+      this.nextButton.disabled = this.busy || this.pageRendering || pageCount === 0 || this.currentPage >= pageCount;
+      this.readButton.disabled = this.busy || this.pageRendering || this.pdfDocument === null || this.selection === null;
+      this.readWholePdfButton.disabled = this.busy || this.pageRendering || this.pdfDocument === null;
       this.language.disabled = this.busy;
+      this.forceImageOcr.disabled = this.busy;
     }
   };
   function installMobilePdfOcrUi() {

@@ -26,11 +26,20 @@
       if ('serviceWorker' in navigator &&
           (location.protocol === 'https:' || ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname))) {
         let reloadingForUpdate = false
+        let updateWaitingForSafeReload = false
         const hadControllerAtStart = Boolean(navigator.serviceWorker.controller)
-        navigator.serviceWorker.addEventListener('controllerchange', () => {
+        const reloadWhenEditorIsSafe = () => {
           if (!hadControllerAtStart || reloadingForUpdate) return
+          if (document.documentElement.dataset.unsavedWork === 'true') {
+            updateWaitingForSafeReload = true
+            return
+          }
           reloadingForUpdate = true
           location.reload()
+        }
+        navigator.serviceWorker.addEventListener('controllerchange', reloadWhenEditorIsSafe)
+        window.addEventListener('cloze:editor-clean', () => {
+          if (updateWaitingForSafeReload) reloadWhenEditorIsSafe()
         })
 
         window.addEventListener('load', async () => {
