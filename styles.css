@@ -55,6 +55,12 @@ button { touch-action: manipulation; }
 input[type="checkbox"], input[type="radio"], input[type="range"] { accent-color: var(--color-primary); }
 body.modal-open { overflow: hidden; }
 
+html.selection-gesture-active,
+html.selection-gesture-active body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 .modal-overlay {
   position: fixed;
   z-index: 1000;
@@ -457,12 +463,27 @@ h2 { font-size: 19px; }
 .pdf-page-toolbar button { min-height: 40px; padding: 7px 10px; font-size: 13px; }
 .pdf-page-status { color: var(--color-text-secondary); text-align: center; font-size: 13px; font-weight: 800; }
 
+.pdf-viewer-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 52px;
+  align-items: stretch;
+}
+
 .pdf-canvas-stack {
   position: relative;
   width: 100%;
-  max-height: min(65vh, 720px);
-  overflow: auto;
+  height: min(65vh, 720px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  touch-action: none;
   background: #6b7280;
+}
+
+.pdf-canvas-stack::-webkit-scrollbar,
+.selectable-text::-webkit-scrollbar {
+  display: none;
 }
 
 .pdf-page-canvas, .pdf-selection-canvas {
@@ -544,19 +565,98 @@ h2 { font-size: 19px; }
 .pdf-ocr-result-text:focus { border-color: var(--color-primary); outline: 3px solid var(--color-focus-ring); }
 .pdf-ocr-result-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 9px; }
 
+.selection-scroll-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 52px;
+  align-items: stretch;
+  min-height: 270px;
+  margin: 22px 0 16px;
+  overflow: hidden;
+  border: 1px solid #d7deea;
+  border-radius: 12px;
+  background: #fbfcfe;
+}
+
 .selectable-text {
   display: flex;
   flex-wrap: wrap;
   align-content: flex-start;
-  min-height: 170px;
-  margin: 22px 0 16px;
+  height: clamp(270px, 48vh, 520px);
+  min-height: 270px;
+  margin: 0;
   padding: 14px;
-  border: 1px solid #d7deea;
-  border-radius: 10px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
   background: #fbfcfe;
   touch-action: none;
   user-select: none;
 }
+
+.selection-scroll-rail {
+  display: grid;
+  grid-template-rows: 52px minmax(90px, 1fr) 52px;
+  width: 52px;
+  min-width: 52px;
+  border-left: 2px solid var(--color-primary-border-strong);
+  outline: none;
+  background: var(--color-primary-soft);
+  touch-action: none;
+  user-select: none;
+}
+
+.selection-scroll-rail:focus-visible {
+  box-shadow: inset 0 0 0 4px var(--color-focus-ring);
+}
+
+.selection-scroll-button {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  min-width: 0;
+  min-height: 52px;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  color: #fff;
+  background: var(--color-primary-strong);
+  font-size: 19px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.selection-scroll-button:disabled {
+  color: var(--color-primary-border-strong);
+  background: var(--color-primary-muted);
+  cursor: default;
+}
+
+.selection-scroll-track {
+  position: relative;
+  min-height: 90px;
+  overflow: hidden;
+  background:
+    linear-gradient(to right, transparent 18px, var(--color-primary-border-strong) 18px 32px, transparent 32px);
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.selection-scroll-thumb {
+  position: absolute;
+  inset: 0 6px auto;
+  min-height: 72px;
+  border: 3px solid #fff;
+  border-radius: 999px;
+  background: var(--color-primary-strong);
+  box-shadow: 0 2px 6px rgb(96 32 8 / 30%);
+  pointer-events: none;
+}
+
+.selection-scroll-rail.is-disabled .selection-scroll-track {
+  opacity: 0.45;
+}
+
 .text-unit {
   min-width: 38px;
   min-height: 44px;
@@ -611,9 +711,48 @@ h2 { font-size: 19px; }
 }
 .mode-option:has(input:checked) { border-color: var(--color-primary); color: var(--color-primary-text); background: var(--color-primary-soft); }
 .mode-option input, .toggle-row input { width: 22px; height: 22px; accent-color: var(--color-primary); }
+.creation-mode-option { align-items: flex-start; min-height: 84px; padding: 15px; }
+.creation-mode-option > span { display: grid; gap: 5px; }
+.creation-mode-option strong { font-size: 16px; }
+.creation-mode-option small { color: var(--color-text-muted); font-size: 13px; line-height: 1.5; }
+.creation-mode-option:has(input:checked) small { color: var(--color-primary-text); }
+.batch-question-summary {
+  margin-top: 22px;
+  border: 1px solid var(--color-primary-border);
+  border-radius: 12px;
+  padding: 18px;
+  background: var(--color-primary-soft);
+}
+.batch-question-summary h2 { margin-bottom: 7px; font-size: 18px; }
+.batch-question-list { display: grid; gap: 9px; margin: 16px 0 0; padding-left: 27px; }
+.batch-question-list li { padding: 10px 12px; border-radius: 8px; background: #fff; }
+.batch-question-list span { margin-right: 10px; color: var(--color-text-muted); font-size: 12px; font-weight: 700; }
 .toggle-row { margin-bottom: 18px; }
 .distractor-field { margin-top: 14px; padding: 16px; border: 1px solid #e1e6ef; border-radius: 10px; }
 .distractor-field h2 { margin-bottom: 12px; font-size: 15px; }
+.choice-option-preview {
+  margin: 0 0 12px;
+  border-radius: 8px;
+  padding: 9px 11px;
+  color: var(--color-accent-green-strong);
+  background: var(--color-accent-green-soft);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.6;
+}
+.choice-option-preview.is-warning,
+.choice-missing-message {
+  color: var(--color-warning);
+  background: var(--color-warning-soft);
+}
+.choice-missing-message {
+  margin: 8px 0 0;
+  border: 1px solid var(--color-warning-border);
+  border-radius: 9px;
+  padding: 12px;
+  font-weight: 700;
+  line-height: 1.6;
+}
 .inline-input-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
 .editor-message { margin: 18px 0 0; color: var(--color-danger); font-weight: 700; line-height: 1.6; }
 .editor-navigation {
@@ -669,10 +808,12 @@ h2 { font-size: 19px; }
   .pdf-page-status { grid-column: 1 / -1; grid-row: 1; }
   .pdf-page-toolbar button:first-child { grid-column: 1; grid-row: 2; }
   .pdf-page-toolbar button:last-child { grid-column: 2; grid-row: 2; }
+  .pdf-canvas-stack { height: clamp(270px, 46dvh, 460px); }
   .pdf-ocr-actions { align-items: stretch; }
   .pdf-ocr-language-label, .pdf-ocr-actions > button { width: 100%; }
   .pdf-ocr-result-actions > button { width: 100%; }
   .editor-navigation > button { flex: 1; min-height: 52px; }
   .editor-navigation .primary-button { min-width: 0; }
   .mode-options { grid-template-columns: 1fr; }
+  .selectable-text { height: clamp(270px, 42dvh, 400px); }
 }

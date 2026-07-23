@@ -26215,8 +26215,10 @@
             answerMode: existing?.answerMode || "written",
             mixBlankAnswersIntoChoices: existing?.mixBlankAnswersIntoChoices ?? true,
             explanation: existing?.explanation || "",
+            creationMode: existing ? "combined" : "onePerCandidate",
             rangeAnchor: null,
             pendingRange: null,
+            selectionScrollTop: 0,
             message: "",
             busy: false,
             distractorDrafts: {}
@@ -26230,6 +26232,30 @@
         if (!editorState) return;
         editorState.message = message;
       }
+      function isBatchCreation(state) {
+        return !state.questionId && state.creationMode === "onePerCandidate" && state.answerCandidates.length > 1;
+      }
+      function targetAnswerCandidates(state) {
+        if (isBatchCreation(state)) return state.answerCandidates.filter((candidate) => candidate.enabled !== false);
+        const selectedIds = new Set(state.selectedBlankCandidateIds);
+        return state.answerCandidates.filter((candidate) => candidate.enabled !== false && selectedIds.has(candidate.id));
+      }
+      function choiceTextsForCandidate(state, candidate) {
+        const values = [candidate.answerText, ...candidate.distractors];
+        if (state.mixBlankAnswersIntoChoices) {
+          values.push(...state.answerCandidates.filter((item) => item.enabled !== false && item.id !== candidate.id).map((item) => item.answerText));
+        }
+        return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+      }
+      function commitDistractorDrafts(state) {
+        for (const candidate of state.answerCandidates) {
+          const value = (state.distractorDrafts[candidate.id] || "").trim();
+          if (value && value !== candidate.answerText && !candidate.distractors.includes(value)) {
+            candidate.distractors.push(value);
+          }
+          state.distractorDrafts[candidate.id] = "";
+        }
+      }
       function validateEditorStep() {
         const state = editorState;
         if (!state) return false;
@@ -26241,9 +26267,20 @@
           setEditorMessage("\u7A7A\u6B04\u306B\u3059\u308B\u8A9E\u53E5\u30921\u3064\u4EE5\u4E0A\u8FFD\u52A0\u3057\u3066\u304F\u3060\u3055\u3044\u3002");
           return false;
         }
-        if (state.step === 3 && state.selectedBlankCandidateIds.length !== state.blankCount) {
+        if (state.step === 3 && !isBatchCreation(state) && state.selectedBlankCandidateIds.length !== state.blankCount) {
           setEditorMessage("\u7A7A\u6B04\u6570\u306B\u5408\u308F\u305B\u3066\u30B7\u30E3\u30C3\u30D5\u30EB\u3057\u3066\u304F\u3060\u3055\u3044\u3002");
           return false;
+        }
+        if (state.step >= 3 && isBatchCreation(state) && state.answerCandidates.length > 50) {
+          setEditorMessage("\u307E\u3068\u3081\u3066\u4F5C\u6210\u3067\u304D\u308B\u306E\u306F50\u554F\u307E\u3067\u3067\u3059\u3002\u8A9E\u53E5\u3092\u6E1B\u3089\u3057\u3066\u304F\u3060\u3055\u3044\u3002");
+          return false;
+        }
+        if (state.step === 4 && state.answerMode === "choice") {
+          const invalidCandidate = targetAnswerCandidates(state).find((candidate) => choiceTextsForCandidate(state, candidate).length < 2);
+          if (invalidCandidate) {
+            setEditorMessage(`\u300C${invalidCandidate.answerText}\u300D\u306E\u9078\u629E\u80A2\u30921\u3064\u4EE5\u4E0A\u8FFD\u52A0\u3057\u3066\u304F\u3060\u3055\u3044\u3002`);
+            return false;
+          }
         }
         return true;
       }
@@ -26351,7 +26388,80 @@
         state.message = `\u300C${answerText}\u300D\u3092\u8FFD\u52A0\u3057\u307E\u3057\u305F\u3002`;
         renderQuestionEditor();
       }
+      function createVerticalScrollRail2(scroller, label, onScroll) {
+        const rail = element2("div", "selection-scroll-rail");
+        const upButton = button("\u25B2", "selection-scroll-button", () => {
+          scroller.scrollBy({ top: -Math.max(120, scroller.clientHeight * 0.75), behavior: "auto" });
+        });
+        const track = element2("div", "selection-scroll-track");
+        const thumb = element2("div", "selection-scroll-thumb");
+        const downButton = button("\u25BC", "selection-scroll-button", () => {
+          scroller.scrollBy({ top: Math.max(120, scroller.clientHeight * 0.75), behavior: "auto" });
+        });
+        rail.tabIndex = 0;
+        rail.setAttribute("role", "scrollbar");
+        rail.setAttribute("aria-label", label);
+        rail.setAttribute("aria-orientation", "vertical");
+        track.append(thumb);
+        rail.append(upButton, track, downButton);
+        const update = () => {
+          const maximum = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+          const trackHeight = track.clientHeight;
+          const thumbHeight = maximum === 0 ? trackHeight : Math.min(trackHeight, Math.max(72, trackHeight * (scroller.clientHeight / scroller.scrollHeight)));
+          const travel = Math.max(0, trackHeight - thumbHeight);
+          thumb.style.height = `${thumbHeight}px`;
+          thumb.style.transform = `translateY(${maximum === 0 ? 0 : travel * (scroller.scrollTop / maximum)}px)`;
+          rail.classList.toggle("is-disabled", maximum === 0);
+          rail.setAttribute("aria-valuemin", "0");
+          rail.setAttribute("aria-valuemax", String(Math.round(maximum)));
+          rail.setAttribute("aria-valuenow", String(Math.round(scroller.scrollTop)));
+          upButton.disabled = scroller.scrollTop <= 0;
+          downButton.disabled = scroller.scrollTop >= maximum - 1;
+          onScroll?.(scroller.scrollTop);
+        };
+        let activePointerId = null;
+        const scrollToPointer = (clientY) => {
+          const bounds = track.getBoundingClientRect();
+          const maximum = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+          const ratio = Math.min(1, Math.max(0, (clientY - bounds.top) / Math.max(1, bounds.height)));
+          scroller.scrollTop = maximum * ratio;
+        };
+        track.addEventListener("pointerdown", (event) => {
+          activePointerId = event.pointerId;
+          track.setPointerCapture(event.pointerId);
+          scrollToPointer(event.clientY);
+          event.preventDefault();
+        });
+        track.addEventListener("pointermove", (event) => {
+          if (activePointerId !== event.pointerId) return;
+          scrollToPointer(event.clientY);
+          event.preventDefault();
+        });
+        const finish = (event) => {
+          if (activePointerId !== event.pointerId) return;
+          activePointerId = null;
+          event.preventDefault();
+        };
+        track.addEventListener("pointerup", finish);
+        track.addEventListener("pointercancel", finish);
+        track.addEventListener("lostpointercapture", finish);
+        rail.addEventListener("keydown", (event) => {
+          const page = Math.max(120, scroller.clientHeight * 0.75);
+          if (event.key === "ArrowUp") scroller.scrollBy({ top: -80, behavior: "auto" });
+          else if (event.key === "ArrowDown") scroller.scrollBy({ top: 80, behavior: "auto" });
+          else if (event.key === "PageUp") scroller.scrollBy({ top: -page, behavior: "auto" });
+          else if (event.key === "PageDown") scroller.scrollBy({ top: page, behavior: "auto" });
+          else if (event.key === "Home") scroller.scrollTop = 0;
+          else if (event.key === "End") scroller.scrollTop = scroller.scrollHeight;
+          else return;
+          event.preventDefault();
+        });
+        scroller.addEventListener("scroll", update, { passive: true });
+        requestAnimationFrame(update);
+        return rail;
+      }
       function renderSelectableText(state) {
+        const workspace = element2("div", "selection-scroll-workspace");
         const text = element2("div", "selectable-text");
         const units = textUnits(state.editedText);
         const unitElements = /* @__PURE__ */ new Map();
@@ -26407,6 +26517,7 @@
             moved: false,
             registered: Boolean(candidateAtPosition(state.answerCandidates, anchor.start, anchor.end))
           };
+          document.documentElement.classList.add("selection-gesture-active");
           text.setPointerCapture(event.pointerId);
           event.preventDefault();
           if (!activeSelection.registered) highlightRange(anchor, anchor);
@@ -26425,6 +26536,7 @@
           event.preventDefault();
           const selection = activeSelection;
           activeSelection = null;
+          document.documentElement.classList.remove("selection-gesture-active");
           if (selection.registered) {
             selectEditorUnit(selection.anchor);
             return;
@@ -26443,16 +26555,29 @@
         function cancelActiveSelection(event) {
           if (!activeSelection || activeSelection.pointerId !== event.pointerId) return;
           activeSelection = null;
+          document.documentElement.classList.remove("selection-gesture-active");
           renderQuestionEditor();
         }
         text.addEventListener("pointercancel", cancelActiveSelection);
         text.addEventListener("lostpointercapture", cancelActiveSelection);
-        return text;
+        text.addEventListener("scroll", () => {
+          state.selectionScrollTop = text.scrollTop;
+        }, { passive: true });
+        workspace.append(
+          text,
+          createVerticalScrollRail2(text, "\u6587\u7AE0\u3092\u4E0A\u4E0B\u306B\u79FB\u52D5", (scrollTop) => {
+            state.selectionScrollTop = scrollTop;
+          })
+        );
+        requestAnimationFrame(() => {
+          text.scrollTop = state.selectionScrollTop || 0;
+        });
+        return workspace;
       }
       function renderEditorStepTwo(state) {
         const section = element2("section", "editor-step");
         section.append(element2("h1", "", "\u7A7A\u6B04\u306B\u3059\u308B\u8A9E\u53E5"));
-        section.append(element2("p", "lead", "\u306A\u305E\u3063\u3066\u7BC4\u56F2\u3092\u9078\u3076\u304B\u3001\u958B\u59CB\u3068\u7D42\u4E86\u306E\u6587\u5B57\u3092\u9806\u306B\u30BF\u30C3\u30D7\u3057\u307E\u3059\u3002\u8272\u4ED8\u304D\u306E\u767B\u9332\u6E08\u307F\u8A9E\u53E5\u3092\u30BF\u30C3\u30D7\u3059\u308B\u3068\u524A\u9664\u3067\u304D\u307E\u3059\u3002"));
+        section.append(element2("p", "lead", "\u6587\u5B57\u3092\u306A\u305E\u3063\u3066\u9078\u3073\u307E\u3059\u3002\u4E0A\u4E0B\u79FB\u52D5\u306F\u53F3\u5074\u306E\u5927\u304D\u306A\u30AA\u30EC\u30F3\u30B8\u30D0\u30FC\u3092\u4F7F\u3063\u3066\u304F\u3060\u3055\u3044\u3002\u9078\u629E\u4E2D\u306F\u753B\u9762\u304C\u52D5\u304D\u307E\u305B\u3093\u3002"));
         section.append(renderSelectableText(state));
         const addButton = button("\u7A7A\u6B04\u306B\u3059\u308B\u8A9E\u53E5\u306B\u8FFD\u52A0", "primary-button wide-button", addPendingCandidate);
         addButton.disabled = !state.pendingRange;
@@ -26503,7 +26628,48 @@
       }
       function renderEditorStepThree(state) {
         const section = element2("section", "editor-step");
-        section.append(element2("h1", "", "\u7A7A\u6B04\u306E\u8ABF\u6574"));
+        section.append(element2("h1", "", "\u554F\u984C\u306E\u4F5C\u308A\u65B9"));
+        const canCreateBatch = !state.questionId && state.answerCandidates.length > 1;
+        if (canCreateBatch) {
+          section.append(element2("p", "lead", "\u767B\u9332\u3057\u305F\u8A9E\u53E5\u3092\u5225\u3005\u306E\u554F\u984C\u306B\u3059\u308B\u304B\u30011\u554F\u306B\u307E\u3068\u3081\u308B\u304B\u9078\u3073\u307E\u3059\u3002"));
+          const creationModes = element2("div", "mode-options creation-mode-options");
+          for (const [value, title, description] of [
+            ["onePerCandidate", "\u8A9E\u53E5\u3054\u3068\u306B\u5225\u306E\u554F\u984C", `${state.answerCandidates.length}\u554F\u3092\u4E00\u6C17\u306B\u4F5C\u6210\uFF08\u304A\u3059\u3059\u3081\uFF09`],
+            ["combined", "1\u3064\u306E\u554F\u984C\u306B\u307E\u3068\u3081\u308B", "\u8907\u6570\u306E\u7A7A\u6B04\u3092\u6301\u30641\u554F\u3092\u4F5C\u6210"]
+          ]) {
+            const label2 = element2("label", "mode-option creation-mode-option");
+            const radio = element2("input");
+            radio.type = "radio";
+            radio.name = "creation-mode";
+            radio.value = value;
+            radio.checked = state.creationMode === value;
+            radio.addEventListener("change", () => {
+              state.creationMode = value;
+              renderQuestionEditor();
+            });
+            const text = element2("span", "");
+            text.append(element2("strong", "", title), element2("small", "", description));
+            label2.append(radio, text);
+            creationModes.append(label2);
+          }
+          section.append(creationModes);
+        }
+        if (isBatchCreation(state)) {
+          const summary = element2("section", "batch-question-summary");
+          summary.append(
+            element2("h2", "", `${state.answerCandidates.length}\u554F\u3092\u307E\u3068\u3081\u3066\u4F5C\u6210\u3057\u307E\u3059`),
+            element2("p", "muted", "\u5404\u554F\u984C\u306F\u540C\u3058\u6587\u7AE0\u3092\u4F7F\u3044\u3001\u7A7A\u6B04\u3060\u3051\u30921\u8A9E\u305A\u3064\u5909\u3048\u307E\u3059\u3002\u4FDD\u5B58\u5F8C\u306F\u500B\u5225\u306B\u7DE8\u96C6\u3067\u304D\u307E\u3059\u3002")
+          );
+          const list = element2("ol", "batch-question-list");
+          state.answerCandidates.forEach((candidate) => {
+            const item = element2("li", "");
+            item.append(element2("span", "", "\u7A7A\u6B04\u306B\u3059\u308B\u8A9E\u53E5"), element2("strong", "", candidate.answerText));
+            list.append(item);
+          });
+          summary.append(list);
+          section.append(summary);
+          return section;
+        }
         section.append(element2("p", "lead", "\u7A7A\u6B04\u6570\u3092\u6C7A\u3081\u3001\u5FC5\u8981\u306A\u3089\u30B7\u30E3\u30C3\u30D5\u30EB\u3057\u3066\u7D44\u307F\u5408\u308F\u305B\u3092\u5909\u3048\u307E\u3059\u3002"));
         const sliderRow = element2("div", "slider-row");
         const label = element2("label", "field-label", `\u7A7A\u6B04\u6570\uFF1A${state.blankCount}`);
@@ -26542,6 +26708,12 @@
       function renderDistractors(state, candidate) {
         const field = element2("section", "distractor-field");
         field.append(element2("h2", "", `\u300C${candidate.answerText}\u300D\u306E\u9078\u629E\u80A2\uFF08\u507D\u56DE\u7B54\uFF09`));
+        const currentChoices = choiceTextsForCandidate(state, candidate);
+        field.append(element2(
+          "p",
+          currentChoices.length > 1 ? "choice-option-preview" : "choice-option-preview is-warning",
+          currentChoices.length > 1 ? `\u8868\u793A\u5019\u88DC\uFF1A${currentChoices.join("\uFF0F")}` : "\u6B63\u89E3\u4EE5\u5916\u306E\u9078\u629E\u80A2\u30921\u3064\u4EE5\u4E0A\u8FFD\u52A0\u3057\u3066\u304F\u3060\u3055\u3044\u3002"
+        ));
         const row = element2("div", "inline-input-row");
         const input = element2("input", "text-input");
         input.type = "text";
@@ -26598,10 +26770,11 @@
           mix.checked = state.mixBlankAnswersIntoChoices;
           mix.addEventListener("change", () => {
             state.mixBlankAnswersIntoChoices = mix.checked;
+            renderQuestionEditor();
           });
-          mixLabel.append(mix, element2("span", "", "\u4ED6\u306E\u7A7A\u6B04\u306E\u7B54\u3048\u3092\u81EA\u52D5\u3067\u6DF7\u305C\u308B"));
+          mixLabel.append(mix, element2("span", "", "\u4ED6\u306E\u767B\u9332\u8A9E\u53E5\u3092\u9078\u629E\u80A2\u3078\u81EA\u52D5\u3067\u6DF7\u305C\u308B"));
           section.append(mixLabel);
-          state.answerCandidates.forEach((candidate) => section.append(renderDistractors(state, candidate)));
+          targetAnswerCandidates(state).forEach((candidate) => section.append(renderDistractors(state, candidate)));
         }
         const explanationLabel = element2("label", "field-label", "\u89E3\u8AAC\uFF08\u4EFB\u610F\uFF09");
         explanationLabel.htmlFor = "question-explanation";
@@ -26616,8 +26789,20 @@
         section.append(explanationLabel, explanation);
         return section;
       }
+      function questionInputFromState(state, selectedBlankCandidateIds = state.selectedBlankCandidateIds) {
+        return {
+          editedText: state.editedText,
+          answerCandidates: state.answerCandidates,
+          selectedBlankCandidateIds,
+          blankCount: selectedBlankCandidateIds.length,
+          answerMode: state.answerMode,
+          mixBlankAnswersIntoChoices: state.mixBlankAnswersIntoChoices,
+          explanation: state.explanation
+        };
+      }
       async function saveQuestionEditor() {
         const state = editorState;
+        if (state) commitDistractorDrafts(state);
         if (!state || state.busy || !validateEditorStep()) {
           renderQuestionEditor();
           return;
@@ -26625,20 +26810,14 @@
         state.busy = true;
         state.message = "";
         renderQuestionEditor();
-        const path = state.questionId ? `./__local_api__/books/${encodeURIComponent(state.bookId)}/questions/${encodeURIComponent(state.questionId)}` : `./__local_api__/books/${encodeURIComponent(state.bookId)}/questions`;
+        const batch = isBatchCreation(state);
+        const path = batch ? `./__local_api__/books/${encodeURIComponent(state.bookId)}/questions/batch` : state.questionId ? `./__local_api__/books/${encodeURIComponent(state.bookId)}/questions/${encodeURIComponent(state.questionId)}` : `./__local_api__/books/${encodeURIComponent(state.bookId)}/questions`;
+        const questionInputs = batch ? state.answerCandidates.map((candidate) => questionInputFromState(state, [candidate.id])) : null;
         try {
           await getJson(path, {
             method: state.questionId ? "PUT" : "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              editedText: state.editedText,
-              answerCandidates: state.answerCandidates,
-              selectedBlankCandidateIds: state.selectedBlankCandidateIds,
-              blankCount: state.blankCount,
-              answerMode: state.answerMode,
-              mixBlankAnswersIntoChoices: state.mixBlankAnswersIntoChoices,
-              explanation: state.explanation
-            })
+            body: JSON.stringify(batch ? { questions: questionInputs } : questionInputFromState(state))
           });
           editorState = null;
           await openBook(state.bookId);
@@ -26664,7 +26843,11 @@
         layout.append(stepContent);
         const navigation = element2("nav", "editor-navigation");
         if (state.step > 1) navigation.append(button("\u623B\u308B", "secondary-button", () => changeEditorStep(-1)));
-        const primary = state.step < 4 ? button("\u6B21\u3078", "primary-button", () => changeEditorStep(1)) : button(state.busy ? "\u4FDD\u5B58\u4E2D\u2026" : "\u4FDD\u5B58", "primary-button", () => void saveQuestionEditor());
+        const primary = state.step < 4 ? button("\u6B21\u3078", "primary-button", () => changeEditorStep(1)) : button(
+          state.busy ? "\u4FDD\u5B58\u4E2D\u2026" : isBatchCreation(state) ? `${state.answerCandidates.length}\u554F\u3092\u307E\u3068\u3081\u3066\u4FDD\u5B58` : "\u4FDD\u5B58",
+          "primary-button",
+          () => void saveQuestionEditor()
+        );
         primary.disabled = state.busy;
         navigation.append(primary);
         layout.append(navigation);
@@ -26721,21 +26904,25 @@
         const field = element2("fieldset", `answer-field${result ? result.correct ? " correct" : " incorrect" : ""}`);
         field.append(element2("legend", "", `\u7A7A\u6B04 ${blankIndex + 1}`));
         const choices = choicesFor(question, segment.candidateId);
-        const useChoices = question.answerMode === "choice" && choices.length > 1;
+        const useChoices = question.answerMode === "choice";
         if (useChoices) {
-          const list = element2("div", "choice-list");
-          for (const option of choices) {
-            const selected = state.answers[segment.candidateId] === option.text;
-            const choice = button(`${option.symbol}. ${option.text}`, `choice-button${selected ? " selected" : ""}`, () => {
-              if (state.judgement) return;
-              state.answers[segment.candidateId] = option.text;
-              renderPractice();
-            });
-            choice.disabled = Boolean(state.judgement);
-            choice.setAttribute("aria-pressed", String(selected));
-            list.append(choice);
+          if (choices.length < 2) {
+            field.append(element2("p", "choice-missing-message", "\u9078\u629E\u80A2\u304C\u4E0D\u8DB3\u3057\u3066\u3044\u307E\u3059\u3002\u554F\u984C\u3092\u7DE8\u96C6\u3057\u3066\u9078\u629E\u80A2\u3092\u8FFD\u52A0\u3057\u3066\u304F\u3060\u3055\u3044\u3002"));
+          } else {
+            const list = element2("div", "choice-list");
+            for (const option of choices) {
+              const selected = state.answers[segment.candidateId] === option.text;
+              const choice = button(`${option.symbol}. ${option.text}`, `choice-button${selected ? " selected" : ""}`, () => {
+                if (state.judgement) return;
+                state.answers[segment.candidateId] = option.text;
+                renderPractice();
+              });
+              choice.disabled = Boolean(state.judgement);
+              choice.setAttribute("aria-pressed", String(selected));
+              list.append(choice);
+            }
+            field.append(list);
           }
-          field.append(list);
         } else {
           const input = element2("input", "written-input");
           input.type = "text";
@@ -26958,7 +27145,7 @@
     }
     return hash >>> 0;
   }
-  function createChoiceOptions(question, candidate) {
+  function collectChoiceValues(candidates, candidate, mixOtherCandidates) {
     const answerText = candidate.answerText.trim();
     const values = [];
     const add = (value, source) => {
@@ -26972,15 +27159,26 @@
       values.push({ text, source });
     };
     add(answerText, "correct");
-    if (question.answerMode === "choice" && question.mixBlankAnswersIntoChoices) {
-      const selectedIds = new Set(question.selectedBlankCandidateIds);
-      for (const item of question.answerCandidates) {
-        if (item.id !== candidate.id && item.enabled && selectedIds.has(item.id)) {
+    if (mixOtherCandidates) {
+      for (const item of candidates) {
+        if (item.id !== candidate.id && item.enabled) {
           add(item.answerText, "automatic");
         }
       }
     }
     for (const distractor of candidate.distractors) add(distractor, "manual");
+    return values;
+  }
+  function hasMultipleChoiceOptions(candidates, candidate, mixOtherCandidates) {
+    return collectChoiceValues(candidates, candidate, mixOtherCandidates).length > 1;
+  }
+  function createChoiceOptions(question, candidate) {
+    const values = collectChoiceValues(
+      question.answerCandidates,
+      candidate,
+      question.answerMode === "choice" && question.mixBlankAnswersIntoChoices
+    );
+    const answerText = candidate.answerText.trim();
     const seed = `${question.id}\0${candidate.id}\0${question.choiceOrderVersion}`;
     return values.map((value) => ({ ...value, score: stableHash(`${seed}\0${value.text}`) })).sort((left, right) => left.score - right.score || left.text.localeCompare(right.text, "ja")).map(({ text, source }, index) => ({
       text,
@@ -27139,6 +27337,13 @@
     if (typeof value.mixBlankAnswersIntoChoices !== "boolean" || typeof value.explanation !== "string") {
       throw new LocalApiError(400, "\u554F\u984C\u30C7\u30FC\u30BF\u306E\u5F62\u5F0F\u304C\u6B63\u3057\u304F\u3042\u308A\u307E\u305B\u3093\u3002");
     }
+    if (value.answerMode === "choice") {
+      const selectedIds = new Set(selectedBlankCandidateIds);
+      const invalidCandidate = answerCandidates.find((candidate) => selectedIds.has(candidate.id) && !hasMultipleChoiceOptions(answerCandidates, candidate, value.mixBlankAnswersIntoChoices === true));
+      if (invalidCandidate) {
+        throw new LocalApiError(400, `\u300C${invalidCandidate.answerText}\u300D\u306E\u9078\u629E\u80A2\u30921\u3064\u4EE5\u4E0A\u8FFD\u52A0\u3057\u3066\u304F\u3060\u3055\u3044\u3002`);
+      }
+    }
     return {
       editedText: value.editedText,
       answerCandidates,
@@ -27189,10 +27394,13 @@
   }
   function toPublicQuestion(book, question) {
     const blanks = getPracticeBlanks(question);
-    const choices = question.answerMode === "choice" ? blanks.map((candidate) => ({
-      candidateId: candidate.id,
-      options: createChoiceOptions(question, candidate).map(({ text, symbol }) => ({ text, symbol }))
-    })).filter((item) => item.options.length > 1) : [];
+    const choices = question.answerMode === "choice" ? blanks.map((candidate) => {
+      const options = createChoiceOptions(question, candidate);
+      return {
+        candidateId: candidate.id,
+        options: options.length > 1 ? options.map(({ text, symbol }) => ({ text, symbol })) : []
+      };
+    }) : [];
     return {
       id: question.id,
       number: question.number,
@@ -27247,6 +27455,24 @@
         }
         throw new LocalApiError(405, "\u3053\u306E\u64CD\u4F5C\u306B\u306F\u5BFE\u5FDC\u3057\u3066\u3044\u307E\u305B\u3093\u3002");
       }
+      const questionBatch = /^\/api\/books\/([^/]+)\/questions\/batch$/u.exec(pathname);
+      if (questionBatch) {
+        if (method !== "POST" || !isRecord(body) || !Array.isArray(body.questions) || body.questions.length === 0 || body.questions.length > 50) {
+          throw new LocalApiError(400, "\u307E\u3068\u3081\u3066\u4F5C\u6210\u3059\u308B\u554F\u984C\u30C7\u30FC\u30BF\u306E\u5F62\u5F0F\u304C\u6B63\u3057\u304F\u3042\u308A\u307E\u305B\u3093\u3002");
+        }
+        const book = store.loadBook(decodeURIComponent(questionBatch[1]));
+        const inputs = body.questions.map(parseQuestionInput);
+        const now = (/* @__PURE__ */ new Date()).toISOString();
+        const questions = inputs.map((input, index) => createQuestion(
+          input,
+          book.questions.length + index + 1,
+          now
+        ));
+        book.questions.push(...questions);
+        book.updatedAt = now;
+        store.saveBook(book);
+        return { questions: questions.map(toEditableQuestion) };
+      }
       const questionDetail = /^\/api\/books\/([^/]+)\/questions\/([^/]+)$/u.exec(pathname);
       if (questionDetail) {
         const book = store.loadBook(decodeURIComponent(questionDetail[1]));
@@ -27299,8 +27525,7 @@
         return {
           questionId: question.id,
           results: getPracticeBlanks(question).map((candidate) => {
-            const options = createChoiceOptions(question, candidate);
-            const usesChoices = question.answerMode === "choice" && options.length > 1;
+            const usesChoices = question.answerMode === "choice";
             const userAnswer = typeof answers[candidate.id] === "string" ? answers[candidate.id] : void 0;
             return {
               candidateId: candidate.id,
@@ -27676,6 +27901,77 @@ ${recognized}`;
     node.addEventListener("click", action);
     return node;
   }
+  function createVerticalScrollRail(scroller, label) {
+    const rail = createElement("div", "selection-scroll-rail");
+    const upButton = createButton("\u25B2", "selection-scroll-button", () => {
+      scroller.scrollBy({ top: -Math.max(120, scroller.clientHeight * 0.75), behavior: "auto" });
+    });
+    const track = createElement("div", "selection-scroll-track");
+    const thumb = createElement("div", "selection-scroll-thumb");
+    const downButton = createButton("\u25BC", "selection-scroll-button", () => {
+      scroller.scrollBy({ top: Math.max(120, scroller.clientHeight * 0.75), behavior: "auto" });
+    });
+    rail.tabIndex = 0;
+    rail.setAttribute("role", "scrollbar");
+    rail.setAttribute("aria-label", label);
+    rail.setAttribute("aria-orientation", "vertical");
+    track.append(thumb);
+    rail.append(upButton, track, downButton);
+    const update = () => {
+      const maximum = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+      const trackHeight = track.clientHeight;
+      const thumbHeight = maximum === 0 ? trackHeight : Math.min(trackHeight, Math.max(72, trackHeight * (scroller.clientHeight / scroller.scrollHeight)));
+      const travel = Math.max(0, trackHeight - thumbHeight);
+      thumb.style.height = `${thumbHeight}px`;
+      thumb.style.transform = `translateY(${maximum === 0 ? 0 : travel * (scroller.scrollTop / maximum)}px)`;
+      rail.classList.toggle("is-disabled", maximum === 0);
+      rail.setAttribute("aria-valuemin", "0");
+      rail.setAttribute("aria-valuemax", String(Math.round(maximum)));
+      rail.setAttribute("aria-valuenow", String(Math.round(scroller.scrollTop)));
+      upButton.disabled = scroller.scrollTop <= 0;
+      downButton.disabled = scroller.scrollTop >= maximum - 1;
+    };
+    let activePointerId = null;
+    const scrollToPointer = (clientY) => {
+      const bounds = track.getBoundingClientRect();
+      const maximum = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+      const ratio = Math.min(1, Math.max(0, (clientY - bounds.top) / Math.max(1, bounds.height)));
+      scroller.scrollTop = maximum * ratio;
+    };
+    track.addEventListener("pointerdown", (event) => {
+      activePointerId = event.pointerId;
+      track.setPointerCapture(event.pointerId);
+      scrollToPointer(event.clientY);
+      event.preventDefault();
+    });
+    track.addEventListener("pointermove", (event) => {
+      if (activePointerId !== event.pointerId) return;
+      scrollToPointer(event.clientY);
+      event.preventDefault();
+    });
+    const finish = (event) => {
+      if (activePointerId !== event.pointerId) return;
+      activePointerId = null;
+      event.preventDefault();
+    };
+    track.addEventListener("pointerup", finish);
+    track.addEventListener("pointercancel", finish);
+    track.addEventListener("lostpointercapture", finish);
+    rail.addEventListener("keydown", (event) => {
+      const page = Math.max(120, scroller.clientHeight * 0.75);
+      if (event.key === "ArrowUp") scroller.scrollBy({ top: -80, behavior: "auto" });
+      else if (event.key === "ArrowDown") scroller.scrollBy({ top: 80, behavior: "auto" });
+      else if (event.key === "PageUp") scroller.scrollBy({ top: -page, behavior: "auto" });
+      else if (event.key === "PageDown") scroller.scrollBy({ top: page, behavior: "auto" });
+      else if (event.key === "Home") scroller.scrollTop = 0;
+      else if (event.key === "End") scroller.scrollTop = scroller.scrollHeight;
+      else return;
+      event.preventDefault();
+    });
+    scroller.addEventListener("scroll", update, { passive: true });
+    requestAnimationFrame(update);
+    return { element: rail, update };
+  }
   var MobilePdfOcrPanel = class {
     constructor(questionTextarea) {
       __publicField(this, "element");
@@ -27695,6 +27991,8 @@ ${recognized}`;
       __publicField(this, "resultArea", createElement("div", "pdf-ocr-result"));
       __publicField(this, "resultTextarea", createElement("textarea", "pdf-ocr-result-text"));
       __publicField(this, "resultSource", createElement("p", "pdf-ocr-result-source"));
+      __publicField(this, "canvasStack", createElement("div", "pdf-canvas-stack"));
+      __publicField(this, "updatePdfScrollRail", () => void 0);
       __publicField(this, "pdfDocument", null);
       __publicField(this, "currentPage", 1);
       __publicField(this, "renderTask", null);
@@ -27737,13 +28035,16 @@ ${recognized}`;
       });
       const pageToolbar = createElement("div", "pdf-page-toolbar");
       pageToolbar.append(this.previousButton, this.pageStatus, this.nextButton);
-      const canvasStack = createElement("div", "pdf-canvas-stack");
       this.pageCanvas.setAttribute("aria-hidden", "true");
       this.selectionCanvas.setAttribute("aria-label", "PDF\u306E\u6587\u5B57\u8D77\u3053\u3057\u7BC4\u56F2\u3092\u56F2\u3080");
       this.selectionCanvas.tabIndex = 0;
-      canvasStack.append(this.pageCanvas, this.selectionCanvas);
+      this.canvasStack.append(this.pageCanvas, this.selectionCanvas);
+      const viewerBody = createElement("div", "pdf-viewer-body");
+      const scrollRail = createVerticalScrollRail(this.canvasStack, "PDF\u3092\u4E0A\u4E0B\u306B\u79FB\u52D5");
+      this.updatePdfScrollRail = scrollRail.update;
+      viewerBody.append(this.canvasStack, scrollRail.element);
       this.viewer.hidden = true;
-      this.viewer.append(pageToolbar, canvasStack);
+      this.viewer.append(pageToolbar, viewerBody);
       this.installSelectionEvents();
       const languageLabel = createElement("label", "pdf-ocr-language-label", "OCR\u8A00\u8A9E");
       this.language.setAttribute("aria-label", "OCR\u8A00\u8A9E");
@@ -27794,6 +28095,7 @@ ${recognized}`;
     async dispose() {
       if (this.disposed) return;
       this.disposed = true;
+      document.documentElement.classList.remove("selection-gesture-active");
       this.recognitionRun += 1;
       this.renderTask?.cancel();
       this.renderTask = null;
@@ -27810,6 +28112,7 @@ ${recognized}`;
         const point = this.pointerPoint(event);
         this.dragStart = point;
         this.selection = { x: point.x, y: point.y, width: 0, height: 0 };
+        document.documentElement.classList.add("selection-gesture-active");
         this.selectionCanvas.setPointerCapture(event.pointerId);
         event.preventDefault();
         this.drawSelection();
@@ -27824,6 +28127,7 @@ ${recognized}`;
         if (this.dragStart === null) return;
         this.selection = selectionFromPoints(this.dragStart, this.pointerPoint(event));
         this.dragStart = null;
+        document.documentElement.classList.remove("selection-gesture-active");
         if (this.selection.width < MIN_SELECTION_SIZE || this.selection.height < MIN_SELECTION_SIZE) {
           this.selection = null;
           this.setStatus("\u6587\u5B57\u8D77\u3053\u3057\u3057\u305F\u3044\u90E8\u5206\u3092\u3001\u6307\u3067\u56DB\u89D2\u304F\u56F2\u3093\u3067\u304F\u3060\u3055\u3044\u3002");
@@ -27837,11 +28141,16 @@ ${recognized}`;
       this.selectionCanvas.addEventListener("pointerdown", begin);
       this.selectionCanvas.addEventListener("pointermove", move);
       this.selectionCanvas.addEventListener("pointerup", finish);
-      this.selectionCanvas.addEventListener("pointercancel", () => {
+      const cancel = () => {
+        document.documentElement.classList.remove("selection-gesture-active");
         this.dragStart = null;
         this.selection = null;
         this.drawSelection();
         this.updateControls();
+      };
+      this.selectionCanvas.addEventListener("pointercancel", cancel);
+      this.selectionCanvas.addEventListener("lostpointercapture", () => {
+        if (this.dragStart !== null) cancel();
       });
     }
     pointerPoint(event) {
@@ -27869,7 +28178,6 @@ ${recognized}`;
         this.viewer.hidden = false;
         await this.renderCurrentPage();
         this.setStatus("\u6587\u5B57\u8D77\u3053\u3057\u3057\u305F\u3044\u90E8\u5206\u3092\u3001\u6307\u3067\u56DB\u89D2\u304F\u56F2\u3093\u3067\u304F\u3060\u3055\u3044\u3002");
-        this.viewer.scrollIntoView({ behavior: "smooth", block: "start" });
       } catch (error) {
         console.error("PDF\u306E\u8AAD\u307F\u8FBC\u307F\u306B\u5931\u6557\u3057\u307E\u3057\u305F\u3002", error);
         this.pdfDocument = null;
@@ -27909,6 +28217,8 @@ ${recognized}`;
       } finally {
         if (this.renderTask === task) this.renderTask = null;
       }
+      this.canvasStack.scrollTop = 0;
+      requestAnimationFrame(this.updatePdfScrollRail);
       this.setStatus("\u6587\u5B57\u8D77\u3053\u3057\u3057\u305F\u3044\u90E8\u5206\u3092\u3001\u6307\u3067\u56DB\u89D2\u304F\u56F2\u3093\u3067\u304F\u3060\u3055\u3044\u3002");
     }
     drawSelection() {
@@ -27957,7 +28267,6 @@ ${recognized}`;
         this.resultSource.textContent = sourceLabel;
         this.resultArea.hidden = false;
         this.setStatus("\u6587\u5B57\u8D77\u3053\u3057\u304C\u5B8C\u4E86\u3057\u307E\u3057\u305F\u3002");
-        this.resultArea.scrollIntoView({ behavior: "smooth", block: "start" });
         this.resultTextarea.focus({ preventScroll: true });
       } catch (error) {
         if (run !== this.recognitionRun) return;
@@ -28045,7 +28354,6 @@ ${recognized}`;
       this.questionTextarea.value = nextText;
       this.questionTextarea.dispatchEvent(new Event("input", { bubbles: true }));
       this.setStatus(append ? "\u6587\u5B57\u8D77\u3053\u3057\u7D50\u679C\u3092\u554F\u984C\u6587\u306E\u672B\u5C3E\u306B\u8FFD\u52A0\u3057\u307E\u3057\u305F\u3002" : "\u6587\u5B57\u8D77\u3053\u3057\u7D50\u679C\u3092\u554F\u984C\u6587\u306B\u53CD\u6620\u3057\u307E\u3057\u305F\u3002");
-      this.questionTextarea.scrollIntoView({ behavior: "smooth", block: "center" });
       this.questionTextarea.focus({ preventScroll: true });
     }
     setBusy(busy) {

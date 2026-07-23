@@ -1,4 +1,4 @@
-const APP_CACHE_NAME = 'cloze-maker-standalone-v5-app-shell'
+const APP_CACHE_NAME = 'cloze-maker-standalone-v6-batch-mobile-selection'
 const RESOURCE_CACHE_NAME = 'cloze-maker-standalone-v1-offline-resources'
 
 const APP_SHELL_PATHS = [
